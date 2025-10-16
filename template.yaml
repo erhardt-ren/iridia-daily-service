@@ -87,7 +87,7 @@ Resources:
     Properties:
       FunctionName: iridia-daily-generator
       CodeUri: src/
-      Handler: iridia-daily.lambda_function.lambda_handler
+      Handler: iridia_daily.lambda_function.lambda_handler
       Runtime: python3.12
       Timeout: 60
       MemorySize: 512
