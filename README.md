@@ -1,20 +1,18 @@
-# SciBits 🔬
+# Iridia Daily
 
-> **Bite-sized science, fresh from the lab**
+Iridia Daily is a serverless email service that delivers fascinating scientific facts from recently published research papers directly to your inbox. Built on AWS using Lambda, Bedrock (Claude), and SNS.
 
-SciBits is a serverless notification service that delivers fascinating scientific facts from recently published research papers directly to your inbox. Built on AWS using Lambda, Bedrock (Claude), and SNS.
+## Features
 
-## ✨ Features
+- **Real Research**: Pulls from actual PubMed papers published in the last week
+- **AI-Powered**: Uses Claude 3.5 Sonnet to transform complex research into accessible facts
+- **Email Delivery**: Daily notifications via AWS SNS
+- **Serverless**: Completely serverless architecture - costs pennies per month
+- **Source Links**: Every fact includes a link to the original research paper
+- **Scheduled**: Runs automatically on your preferred schedule
+- **Scalable**: Broadcast same fact to unlimited subscribers
 
-- 📄 **Real Research**: Pulls from actual PubMed papers published in the last week
-- 🤖 **AI-Powered**: Uses Claude 3.5 Sonnet to transform complex research into accessible facts
-- 📧 **Email Delivery**: Daily notifications via AWS SNS
-- ⚡ **Serverless**: Completely serverless architecture - costs pennies per month
-- 🔗 **Source Links**: Every fact includes a link to the original research paper
-- 📅 **Scheduled**: Runs automatically on your preferred schedule
-- 🎯 **Scalable**: Broadcast same fact to unlimited subscribers
-
-## 🏗️ Architecture
+## Architecture
 
 ```
 EventBridge (Daily Trigger)
@@ -32,19 +30,11 @@ Lambda Function
 - **Services**: Lambda, Bedrock, SNS, EventBridge, CloudWatch
 - **AI Model**: Anthropic Claude 3.5 Sonnet v2
 
-## 💰 Cost
+## Cost
 
-Running SciBits costs approximately **$0.12/month** for 100 subscribers:
+(Under Construction)
 
-| Service | Monthly Cost |
-|---------|-------------|
-| Lambda | Free (within free tier) |
-| Bedrock (Claude) | ~$0.09 |
-| SNS | ~$0.015 |
-| EventBridge | Free |
-| CloudWatch Logs | ~$0.01 |
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -58,8 +48,8 @@ Running SciBits costs approximately **$0.12/month** for 100 subscribers:
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/scibits.git
-cd scibits
+git clone https://github.com/yourusername/Iridia Daily.git
+cd Iridia Daily
 ```
 
 2. **Enable Bedrock Access**
@@ -76,7 +66,7 @@ sam build
 sam deploy --guided
 
 # Follow prompts:
-# - Stack Name: scibits
+# - Stack Name: Iridia Daily
 # - AWS Region: us-east-1
 # - Parameter EmailAddress: your-email@example.com
 # - Allow IAM role creation: Y
@@ -98,25 +88,19 @@ aws lambda invoke \
 # Check your email for the fact!
 ```
 
-## 🛠️ Configuration
+## How to configure the newsletter
 
 ### Change Schedule
 
 Edit `template.yaml` to change when facts are sent:
 
 ```yaml
-Schedule: cron(0 13 * * ? *)  # Daily at 8am EST
+Schedule: cron(0 11 * * ? *)  # Daily at 7am EST
 ```
-
-**Common schedules:**
-- `cron(0 13 * * ? *)` - Daily at 8am EST (1pm UTC)
-- `cron(0 20 * * ? *)` - Daily at 3pm EST (8pm UTC)  
-- `cron(0 14 ? * MON *)` - Every Monday at 9am EST
-- `cron(0 12 ? * MON-FRI *)` - Weekdays at 7am EST
 
 ### Customize Topics
 
-Edit `src/lambda_function.py` to change research fields:
+Edit `src/iridia-daily/lambda_function.py` to change research fields:
 
 ```python
 # Current (broad science)
@@ -126,35 +110,7 @@ query = urllib.parse.quote(f"(biology[MeSH] OR physics OR neuroscience OR astron
 query = urllib.parse.quote(f"(astrophysics OR cosmology OR astronomy) AND {date_range}[PDAT]")
 ```
 
-### Add More Subscribers
-
-```bash
-# Get your SNS topic ARN
-TOPIC_ARN=$(aws cloudformation describe-stacks \
-  --stack-name scibits \
-  --query 'Stacks[0].Outputs[?OutputKey==`SNSTopicArn`].OutputValue' \
-  --output text)
-
-# Subscribe new email
-aws sns subscribe \
-  --topic-arn $TOPIC_ARN \
-  --protocol email \
-  --notification-endpoint friend@example.com
-```
-
-## 📁 Project Structure
-
-```
-scibits/
-├── template.yaml              # SAM infrastructure definition
-├── src/
-│   ├── lambda_function.py     # Main Lambda function
-│   └── requirements.txt       # Python dependencies
-├── .gitignore
-└── README.md
-```
-
-## 🔧 Development
+## Development
 
 ### Local Testing
 
@@ -171,6 +127,7 @@ sam logs --tail --name FactGeneratorFunction
 
 ### Deploy Updates
 
+__*To be migrated to a proper CI/CD pipeline eventually*__
 ```bash
 # After making changes
 sam build && sam deploy
@@ -178,48 +135,45 @@ sam build && sam deploy
 
 ### View Logs
 
-```bash
-# Real-time logs
-sam logs --tail --name FactGeneratorFunction
-
-# Recent logs
-sam logs --name FactGeneratorFunction --start-time '10min ago'
-```
+Under construction
 
 ## 🐛 Troubleshooting
 
 ### No email received?
 1. Check you confirmed the SNS subscription
 2. Check spam folder
-3. View Lambda logs: `sam logs --tail --name FactGeneratorFunction`
+3. View Lambda logs in CloudWatch
 
 ### Bedrock "Access Denied" error?
 1. Enable Claude 3.5 Sonnet in AWS Console → Bedrock → Model Access
-2. Ensure you're in the same region (us-east-1)
+2. Ensure you're using the inference profile
 3. Verify IAM permissions in template.yaml
 
 ### "Rate exceeded" error?
 Wait 1 minute between deployments. CloudFormation has rate limits.
 
-## 🎨 Customization Ideas
-
+## Future Improvements
+- **Implement Proper Testing**
+- **Implement Email List Subscribe/Unsubscribe**
+- **Create PR Template**
+- **Add License**
 - **Implement CI/CD** so that much of the building/testing/deploying can be automated
 - **Web archive** hosted on S3 + CloudFront
 
-## 📝 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Please refer to the project license provided in the file LICENSE.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **PubMed/NCBI** for providing free access to research papers
 - **Anthropic** for Claude AI via AWS Bedrock
 - **AWS SAM** for making serverless deployment simple
 
-## 📮 Contact
+## Contact
 
 Have questions or suggestions? Open an issue or reach out!
 
 ---
 
-**SciBits** - *Science in digestible bits* 🔬✨
+**Iridia Daily** - *Summarized Science Daily*
