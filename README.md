@@ -1,16 +1,16 @@
 # Iridia Daily
 
-Iridia Daily is a serverless email service that delivers fascinating scientific facts from recently published research papers directly to your inbox. Built on AWS using Lambda, Bedrock (Claude), and SNS.
+Iridia Daily is a serverless email service that delivers fascinating scientific facts from recently published research papers directly to your inbox. Built on AWS using Lambda, Bedrock (Claude), and SES. I have iridia-daily registered and managed through Route 53. Subscriptions are managed via SNS and (what will be) a dashboard.
 
 ## Features
 
 - **Real Research**: Pulls from actual PubMed papers published in the last week
 - **AI-Powered**: Uses Claude 3.5 Sonnet to transform complex research into accessible facts
-- **Email Delivery**: Daily notifications via AWS SNS
-- **Serverless**: Completely serverless architecture - costs pennies per month
+- **Email Delivery**: Daily notifications via AWS SES
+- **Serverless**
 - **Source Links**: Every fact includes a link to the original research paper
 - **Scheduled**: Runs automatically on your preferred schedule
-- **Scalable**: Broadcast same fact to unlimited subscribers
+- **Scalable**: Broadcast same email to unlimited subscribers
 
 ## Architecture
 
@@ -21,13 +21,13 @@ Lambda Function
     ↓
     ├─→ PubMed API (Fetch recent papers)
     ├─→ AWS Bedrock (Generate accessible fact)
-    └─→ SNS Topic (Broadcast to subscribers)
+    └─→ SES (Send newsletter to subscribers)
 ```
 
 **Tech Stack:**
 - **Runtime**: Python 3.12
 - **Infrastructure**: AWS SAM (Infrastructure as Code)
-- **Services**: Lambda, Bedrock, SNS, EventBridge, CloudWatch
+- **Services**: Lambda, Bedrock, SES, SNS, EventBridge, CloudWatch
 - **AI Model**: Anthropic Claude 3.5 Sonnet v2
 
 ## Cost
