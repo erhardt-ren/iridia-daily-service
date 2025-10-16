@@ -1,0 +1,3 @@
+# Iridia Daily - Production Dependencies
+
+boto3>=1.34.0
