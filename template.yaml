@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Iridia Daily Research Intelligence Service
+
+Parameters:
+  SenderEmail:
+    Type: String
+    Description: Your verified IridiaDaily sender email address
+    Default: research@iridia-daily.com
+
+  RecipientEmail:
+    Type: String
+    Description: Your personal email address
+    Default: alex.howelljr@gmail.com # Need to change to mailing list....
+
+Resources:
+  # SNS Topic
+  IridiaDailyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: iridiadaily-subscribers
+      DisplayName: Iridia Daily Subscribers
+
+  # IAM Role for Lambda Function
+  IridiaDailyLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Application
+          Value: IridiaDaily 
+        - Key: Purpose
+          Value: Lambda execution role for IridiaDaily research intelligence
+      Policies:
+        - PolicyName: IridiaDailyLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # SES permissions
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                  - ses:GetSendQuota
+                  - ses:GetSendStatistics
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    'ses:FromAddress': !Ref SenderEmail
+              
+              # SNS permissions
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref IridiaDailyTopic
+              
+              # Bedrock permissions
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - !Sub "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+              
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - "arn:aws:bedrock:us-*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+              
+              - Effect: Allow
+                Action:
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListFoundationModels
+                Resource: "*"
+
+  # Lambda Function
+  ResearchGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: iridia-daily-generator
+      CodeUri: src/
+      Handler: iridia-daily.lambda_function.lambda_handler
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 512
+      Role: !GetAtt IridiaDailyLambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref IridiaDailyTopic
+          SENDER_EMAIL: !Ref SenderEmail
+          RECIPIENT_EMAIL: !Ref RecipientEmail
+          AWS_BEDROCK_REGION: !Ref AWS::Region
+      Events:
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 11 * * ? *)
+            Description: Trigger daily Iridia Daily research intelligence
+            Enabled: true
+
+Outputs:
+  SNSTopicArn:
+    Description: SNS Topic ARN for Iridia Daily subscriptions
+    Value: !Ref IridiaDailyTopic
+
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ResearchGeneratorFunction
+
+  LambdaExecutionRoleArn:
+    Description: Lambda Execution Role ARN
+    Value: !GetAtt IridiaDailyLambdaExecutionRole.Arn
+
+  SenderEmail:
+    Description: Iridia Daily sender email (must be verified in SES)
+    Value: !Ref SenderEmail
+
+  RecipientEmail:
+    Description: Current recipient email
+    Value: !Ref RecipientEmail
