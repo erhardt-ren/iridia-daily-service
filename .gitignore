@@ -9,8 +9,10 @@ __pycache__/
 *.so
 .Python
 venv/
+env/
 .env
 .coverage
+htmlcov/
 
 # IDE
 .vscode/
@@ -24,4 +26,4 @@ Thumbs.db
 
 # Test outputs
 response.json
-EOF
+*.log
