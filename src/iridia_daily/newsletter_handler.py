@@ -1,28 +1,98 @@
-"""Newsletter generation and distribution with monitoring."""
+"""Newsletter generation and distribution with personalized unsubscribe links.
+
+Generates daily newsletter from PubMed research papers and delivers to
+subscribers with secure, personalized unsubscribe tokens using SES bulk API.
+"""
 
 import json
 import boto3
 import os
 import re
 from datetime import datetime
+from botocore.exceptions import ClientError
 
 from .clients import PubMedClient, BedrockClient
 from .email_generator import EmailGenerator
 from . import monitoring
+from .token_utils import generate_unsubscribe_token
 
 ses = boto3.client('ses', region_name='us-east-1')
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
+# Bulk send batch size (SES limit is 50)
+BULK_BATCH_SIZE = 50
 
-def lambda_handler(event, context):
-    """Generate and send daily newsletter.
 
-    Args:
-        event: Lambda event.
-        context: Lambda context.
+def get_api_url():
+    """Get API Gateway URL from environment or discover it.
 
     Returns:
-        dict: Response with status and delivery statistics.
+        str: Base API URL or empty string if not found.
+    """
+    api_url = os.environ.get('API_URL', '')
+    
+    if not api_url or api_url == 'PLACEHOLDER':
+        region = os.environ.get('AWS_REGION', 'us-east-1')
+        
+        try:
+            cfn = boto3.client('cloudformation', region_name=region)
+            stacks = cfn.describe_stacks()
+            for stack in stacks.get('Stacks', []):
+                stack_name = stack.get('StackName', '')
+                if 'iridia' in stack_name.lower():
+                    for output in stack.get('Outputs', []):
+                        if output.get('OutputKey') == 'ApiUrl':
+                            return output.get('OutputValue', '')
+        except Exception as e:
+            print(f"Could not discover API URL: {e}")
+        
+        return ""
+    
+    return api_url
+
+
+def ensure_email_template():
+    """Ensure the SES email template exists for bulk sending.
+
+    Creates a simple pass-through template if it doesn't exist.
+    Template uses {{html_content}}, {{text_content}}, and {{subject}}
+    placeholders.
+    """
+    template_name = 'IridiaDailyNewsletter'
+
+    try:
+        ses.get_template(TemplateName=template_name)
+        print(f"Template '{template_name}' already exists")
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'TemplateDoesNotExist':
+            print(f"Creating template '{template_name}'")
+            try:
+                ses.create_template(
+                    Template={
+                        'TemplateName': template_name,
+                        'SubjectPart': '{{subject}}',
+                        'HtmlPart': '{{html_content}}',
+                        'TextPart': '{{text_content}}'
+                    }
+                )
+                print(f"Template '{template_name}' created successfully")
+            except Exception as create_error:
+                print(f"Error creating template: {create_error}")
+                raise
+        else:
+            print(f"Error checking template: {e}")
+            raise
+
+
+def lambda_handler(event, context):
+    """Generate and send daily newsletter with personalized links.
+
+    Args:
+        event: Lambda event object.
+        context: Lambda context object.
+
+    Returns:
+        dict: Response with status code, body, and delivery statistics.
     """
     print("Starting newsletter generation")
     start_time = datetime.now()
@@ -44,6 +114,8 @@ def lambda_handler(event, context):
             {'Name': 'Status', 'Value': 'SenderNotVerified'}
         ])
         return {'statusCode': 500, 'body': 'Sender email not verified'}
+
+    ensure_email_template()
 
     print("Fetching subscribers...")
     subscribers = get_subscribers(contact_list_name)
@@ -92,26 +164,22 @@ def lambda_handler(event, context):
     while len(summaries) < len(papers):
         summaries.append("Breakthrough research published.")
 
-    print(f"Sending newsletter to {len(valid_subscribers)} subscribers...")
+    print(f"Sending bulk newsletters to {len(valid_subscribers)} subscribers...")
     email_gen = EmailGenerator()
 
     try:
         date_str = datetime.now().strftime("%A, %B %d, %Y")
         subject = email_gen.generate_subject_line()
 
-        html_content = email_gen.generate_html_email(
-            papers, summaries, date_str, api_url
-        )
-        plain_text = email_gen.generate_plain_text_email(
-            papers, summaries, date_str, api_url
-        )
-
-        result = send_newsletter(
+        result = send_bulk_newsletters(
             subscribers=valid_subscribers,
             sender_email=sender_email,
             subject=subject,
-            html_content=html_content,
-            plain_text=plain_text
+            papers=papers,
+            summaries=summaries,
+            date_str=date_str,
+            api_url=api_url,
+            email_gen=email_gen
         )
 
         duration = (datetime.now() - start_time).total_seconds()
@@ -150,20 +218,30 @@ def get_subscribers(contact_list_name):
     """Retrieve active subscribers from contact list.
 
     Args:
-        contact_list_name: Name of SES contact list.
+        contact_list_name (str): Name of SES contact list.
 
     Returns:
         list: Email addresses of active subscribers.
     """
     subscribers = []
-    paginator = ses_v2.get_paginator('list_contacts')
+    next_token = None
 
     try:
-        for page in paginator.paginate(ContactListName=contact_list_name):
-            for contact in page.get('Contacts', []):
+        while True:
+            params = {'ContactListName': contact_list_name}
+            if next_token:
+                params['NextToken'] = next_token
+
+            response = ses_v2.list_contacts(**params)
+
+            for contact in response.get('Contacts', []):
                 topic_prefs = contact.get('TopicPreferences', [{}])[0]
                 if topic_prefs.get('SubscriptionStatus') == 'OPT_IN':
                     subscribers.append(contact['EmailAddress'])
+
+            next_token = response.get('NextToken')
+            if not next_token:
+                break
 
         return subscribers
 
@@ -172,64 +250,120 @@ def get_subscribers(contact_list_name):
         return []
 
 
-def send_newsletter(subscribers, sender_email, subject, html_content,
-                    plain_text):
-    """Send newsletter to all subscribers with retry logic.
+def send_bulk_newsletters(subscribers, sender_email, subject, papers,
+                          summaries, date_str, api_url, email_gen):
+    """Send newsletters using SES bulk API with personalized content.
+
+    Each subscriber receives a personalized email with their own secure
+    unsubscribe token. Emails are sent in batches of 50 (SES limit) for
+    optimal performance while maintaining per-recipient personalization.
+    Uses fully custom content without requiring SES templates.
 
     Args:
-        subscribers: List of subscriber email addresses.
-        sender_email: Verified sender email.
-        subject: Email subject line.
-        html_content: HTML email body.
-        plain_text: Plain text email body.
+        subscribers (list): Subscriber email addresses.
+        sender_email (str): Verified sender email address.
+        subject (str): Email subject line.
+        papers (list): Research papers to include.
+        summaries (list): Paper summaries.
+        date_str (str): Formatted date string.
+        api_url (str): Base API URL for unsubscribe links.
+        email_gen (EmailGenerator): Email generator instance.
 
     Returns:
-        dict: Delivery statistics.
+        dict: Delivery statistics with 'delivered', 'failed', and
+            'failed_emails' keys.
     """
-    batch_size = 50
     delivered = 0
     failed = 0
     failed_emails = []
 
-    recipient_display = os.environ.get(
-        'RECIPIENT_DISPLAY',
-        f"Iridia Daily Readers <{sender_email}>"
-    )
+    template_name = 'IridiaDailyNewsletter'
+    total_batches = ((len(subscribers) + BULK_BATCH_SIZE - 1)
+                     // BULK_BATCH_SIZE)
 
-    for i in range(0, len(subscribers), batch_size):
-        batch = subscribers[i:i + batch_size]
-        batch_num = i // batch_size + 1
+    for batch_num in range(0, len(subscribers), BULK_BATCH_SIZE):
+        batch = subscribers[batch_num:batch_num + BULK_BATCH_SIZE]
+        current_batch = (batch_num // BULK_BATCH_SIZE) + 1
 
-        try:
-            def send_batch():
-                return ses.send_email(
-                    Source=f"Iridia Daily <{sender_email}>",
-                    Destination={
-                        'ToAddresses': [recipient_display],
-                        'BccAddresses': batch
-                    },
-                    Message={
-                        'Subject': {'Data': subject, 'Charset': 'UTF-8'},
-                        'Body': {
-                            'Text': {'Data': plain_text, 'Charset': 'UTF-8'},
-                            'Html': {'Data': html_content, 'Charset': 'UTF-8'}
-                        }
-                    }
+        print(f"Processing batch {current_batch}/{total_batches} "
+              f"({len(batch)} subscribers)")
+
+        bulk_entries = []
+
+        for email in batch:
+            try:
+                unsubscribe_token = generate_unsubscribe_token(email)
+                unsubscribe_url = (f"{api_url}/unsubscribe?"
+                                   f"token={unsubscribe_token}")
+
+                html_content = email_gen.generate_html_email(
+                    papers, summaries, date_str, unsubscribe_url
+                )
+                plain_text = email_gen.generate_plain_text_email(
+                    papers, summaries, date_str, unsubscribe_url
                 )
 
-            monitoring.retry_with_backoff(send_batch, max_attempts=3)
-            delivered += len(batch)
-            print(f"Sent batch {batch_num}: {len(batch)} emails")
+                bulk_entries.append({
+                    'Destination': {
+                        'ToAddresses': [email]
+                    },
+                    'ReplacementEmailContent': {
+                        'ReplacementTemplate': {
+                            'ReplacementTemplateData': json.dumps({
+                                'subject': subject,
+                                'html_content': html_content,
+                                'text_content': plain_text
+                            })
+                        }
+                    }
+                })
+
+            except Exception as e:
+                print(f"Error preparing email for {email}: {e}")
+                failed += 1
+                failed_emails.append(email)
+
+        if not bulk_entries:
+            print(f"Batch {current_batch}: No valid entries to send")
+            continue
+
+        try:
+            response = ses_v2.send_bulk_email(
+                FromEmailAddress=f"Iridia Daily <{sender_email}>",
+                DefaultContent={
+                    'Template': {
+                        'TemplateName': template_name,
+                        'TemplateData': json.dumps({
+                            'subject': subject,
+                            'html_content': '',
+                            'text_content': ''
+                        })
+                    }
+                },
+                BulkEmailEntries=bulk_entries
+            )
+
+            for idx, result in enumerate(response.get('BulkEmailEntryResults', [])):
+                email = batch[idx] if idx < len(batch) else 'unknown'
+
+                if result.get('Status') == 'SUCCESS':
+                    delivered += 1
+                else:
+                    failed += 1
+                    failed_emails.append(email)
+                    error_msg = result.get('Error', 'Unknown error')
+                    print(f"Failed to send to {email}: {error_msg}")
+
+            print(f"Batch {current_batch} complete: "
+                  f"{delivered} delivered, {failed} failed so far")
 
         except Exception as e:
+            print(f"Bulk send failed for batch {current_batch}: {e}")
             failed += len(batch)
             failed_emails.extend(batch)
-            print(f"Failed batch {batch_num}: {e}")
-            print(f"Failed emails: {', '.join(batch[:5])}"
-                  f"{'...' if len(batch) > 5 else ''}")
 
     if failed > 0:
-        print(f"Failed to deliver to {failed} subscribers")
+        print(f"Total delivery failures: {failed}")
         print(f"Sample failed emails: {', '.join(failed_emails[:10])}")
 
     return {
@@ -240,17 +374,21 @@ def send_newsletter(subscribers, sender_email, subject, html_content,
 
 
 def is_valid_email(email):
-    """Validate email format according to RFC 5321.
+    """Validate email address format.
+
+    Checks email format according to RFC 5321 standards, including
+    local part rules, domain format, and length restrictions.
 
     Args:
-        email: Email address to validate.
+        email (str): Email address to validate.
 
     Returns:
-        bool: True if valid, False otherwise.
+        bool: True if email format is valid, False otherwise.
     """
     if not email or not isinstance(email, str):
         return False
 
+    # Check email format with regex
     pattern = (r'^[a-zA-Z0-9][a-zA-Z0-9._%+-]*[a-zA-Z0-9]@'
                r'[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$')
 
