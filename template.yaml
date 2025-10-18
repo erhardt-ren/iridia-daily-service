@@ -18,8 +18,35 @@ Parameters:
     Description: Display name for To field
     Default: "Iridia Daily Readers"
 
+  AlertEmail:
+    Type: String
+    Description: Email for CloudWatch alarms
+    Default: alerts@iridia-daily.com
+
 Resources:
-  # IAM Role for all Lambda functions
+  # SES Contact List and Topic
+  NewsletterContactList:
+    Type: AWS::SES::ContactList
+    Properties:
+      ContactListName: !Ref ContactListName
+      Description: Iridia Daily newsletter subscribers
+      Topics:
+        - TopicName: daily-research
+          DisplayName: Daily Research Newsletter
+          Description: Daily scientific research insights
+          DefaultSubscriptionStatus: OPT_IN
+
+  # SNS Topic for CloudWatch Alarms
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: iridia-daily-alerts
+      DisplayName: Iridia Daily Alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
+  # IAM Role for Lambda Functions
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -41,6 +68,7 @@ Resources:
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
+                  - ses:GetIdentityVerificationAttributes
                   - sesv2:*
                 Resource: "*"
               
@@ -50,10 +78,16 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
                   - "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+              
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
 
-  # Newsletter generation and distribution
+  # Newsletter Lambda Function
   NewsletterFunction:
     Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
     Properties:
       FunctionName: iridia-daily-newsletter
       CodeUri: src/
@@ -77,9 +111,10 @@ Resources:
             Description: Daily newsletter at 7am EST
             Enabled: true
 
-  # Subscription requests
+  # Subscribe Lambda Function
   SubscribeFunction:
     Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
     Properties:
       FunctionName: iridia-daily-subscribe
       CodeUri: src/
@@ -100,9 +135,10 @@ Resources:
             Method: post
             RestApiId: !Ref NewsletterApi
 
-  # Unsubscribe requests
+  # Unsubscribe Lambda Function
   UnsubscribeFunction:
     Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
     Properties:
       FunctionName: iridia-daily-unsubscribe
       CodeUri: src/
@@ -122,7 +158,7 @@ Resources:
             Method: get
             RestApiId: !Ref NewsletterApi
 
-  # API Gateway
+  # API Gateway with Throttling
   NewsletterApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -131,8 +167,78 @@ Resources:
         AllowOrigin: "'*'"
         AllowMethods: "'POST, GET, OPTIONS'"
         AllowHeaders: "'Content-Type'"
+      MethodSettings:
+        - ResourcePath: /subscribe
+          HttpMethod: POST
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+        - ResourcePath: /unsubscribe
+          HttpMethod: GET
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+
+  # CloudWatch Alarms
+  NewsletterErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-newsletter-errors
+      AlarmDescription: Alert on newsletter generation errors
+      MetricName: NewsletterGeneration
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Status
+          Value: Error
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  SubscriptionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-subscription-failures
+      AlarmDescription: Alert on subscription failures
+      MetricName: SubscriptionAttempt
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Status
+          Value: Error
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  NewsletterDeliveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-newsletter-low-delivery
+      AlarmDescription: Alert when newsletter delivery drops
+      MetricName: NewsletterDelivered
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
 
 Outputs:
+  ContactListName:
+    Description: SES Contact List Name
+    Value: !Ref ContactListName
+    Export:
+      Name: !Sub "${AWS::StackName}-ContactListName"
+  
   SubscribeEndpoint:
     Description: Subscription API endpoint
     Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod/subscribe"
@@ -145,6 +251,8 @@ Outputs:
     Description: Base API URL
     Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
   
-  NewsletterFunction:
-    Description: Newsletter Lambda function name
-    Value: !Ref NewsletterFunction
+  AlertTopicArn:
+    Description: SNS Topic for Alerts
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AlertTopic"
