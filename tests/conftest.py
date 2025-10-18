@@ -17,17 +17,36 @@ def setup_env(monkeypatch):
     monkeypatch.setenv('RECIPIENT_DISPLAY', 'Iridia Daily Readers <research@iridia-daily.com>')
     monkeypatch.setenv('AWS_BEDROCK_REGION', 'us-east-1')
     monkeypatch.setenv('AWS_REGION', 'us-east-1')
-    monkeypatch.setenv('API_URL', 'https://test-api.execute-api.us-east-1.amazonaws.com/prod')
 
 
 @pytest.fixture(autouse=True)
 def mock_monitoring(request, monkeypatch):
     """Mock monitoring utilities to prevent actual AWS calls.
     
-    Skips mocking for test_monitoring.py so those tests can test real functions.
+    Skips mocking for test_monitoring.py and tests that need real retry logic.
     """
     # Skip mocking if we're in the monitoring test file
     if 'test_monitoring' in request.node.nodeid:
+        yield
+        return
+    
+    # Skip mocking for specific tests that need real retry behavior
+    if 'test_confirmation_with_retry_logic' in request.node.nodeid:
+        # Mock CloudWatch to prevent actual AWS calls
+        mock_cloudwatch = Mock()
+        monkeypatch.setattr('iridia_daily.monitoring.cloudwatch', mock_cloudwatch)
+        
+        # Mock only metrics and sender verification, keep real retry
+        def mock_put_metric(*args, **kwargs):
+            pass
+        
+        def mock_verify_sender(*args, **kwargs):
+            return True
+        
+        monkeypatch.setattr('iridia_daily.monitoring.put_metric', mock_put_metric)
+        monkeypatch.setattr('iridia_daily.monitoring.verify_ses_sender', mock_verify_sender)
+        # Don't mock retry_with_backoff - let it work normally
+        
         yield
         return
     
@@ -45,7 +64,7 @@ def mock_monitoring(request, monkeypatch):
     monkeypatch.setattr('iridia_daily.monitoring.retry_with_backoff', mock_retry)
     monkeypatch.setattr('iridia_daily.monitoring.verify_ses_sender', mock_verify_sender)
     
-    yield  # <-- CRITICAL: Must yield here too!
+    yield
 
 
 @pytest.fixture

@@ -11,10 +11,10 @@ def put_metric(metric_name, value, unit='Count', dimensions=None):
     """Publish metric to CloudWatch.
 
     Args:
-        metric_name: Name of the metric.
-        value: Metric value.
-        unit: CloudWatch unit type.
-        dimensions: Optional list of dimension dicts.
+        metric_name (str): Name of the metric.
+        value (float): Metric value.
+        unit (str): CloudWatch unit type.
+        dimensions (list): Optional list of dimension dicts.
     """
     try:
         metric_data = {
@@ -39,15 +39,15 @@ def retry_with_backoff(func, max_attempts=3, base_delay=1):
     """Retry function with exponential backoff.
 
     Args:
-        func: Function to retry.
-        max_attempts: Maximum retry attempts.
-        base_delay: Initial delay in seconds.
+        func (callable): Function to retry.
+        max_attempts (int): Maximum retry attempts.
+        base_delay (int): Initial delay in seconds.
 
     Returns:
         Function result if successful.
 
     Raises:
-        Last exception if all attempts fail.
+        Exception: Last exception if all attempts fail.
     """
     last_exception = None
 
@@ -68,28 +68,48 @@ def retry_with_backoff(func, max_attempts=3, base_delay=1):
 
 
 def verify_ses_sender(sender_email):
-    """Verify sender email is configured in SES.
+    """Verify sender email or domain is verified in SES.
+
+    Checks if either the specific email address OR its domain is verified.
+    When a domain is verified in SES, all email addresses at that domain
+    are authorized to send, even if they don't physically exist.
 
     Args:
-        sender_email: Email address to verify.
+        sender_email (str): Email address to verify.
 
     Returns:
-        bool: True if verified, False otherwise.
+        bool: True if email or domain is verified, False otherwise.
     """
     ses = boto3.client('ses', region_name='us-east-1')
 
     try:
+        if '@' not in sender_email:
+            print(f"Invalid email format: {sender_email}")
+            return False
+
+        domain = sender_email.split('@')[1]
+
         response = ses.get_identity_verification_attributes(
-            Identities=[sender_email]
+            Identities=[sender_email, domain]
         )
 
         attributes = response.get('VerificationAttributes', {})
-        sender_status = attributes.get(sender_email, {})
 
-        if sender_status.get('VerificationStatus') == 'Success':
+        email_status = attributes.get(sender_email, {})
+        if email_status.get('VerificationStatus') == 'Success':
+            print(f"Email address verified: {sender_email}")
             return True
 
-        print(f"Sender email not verified: {sender_email}")
+        domain_status = attributes.get(domain, {})
+        if domain_status.get('VerificationStatus') == 'Success':
+            print(f"Domain verified: {domain} (allows {sender_email})")
+            return True
+
+        print(f"Neither email nor domain verified for: {sender_email}")
+        email_ver = email_status.get('VerificationStatus', 'Not found')
+        domain_ver = domain_status.get('VerificationStatus', 'Not found')
+        print(f"  - Email status: {email_ver}")
+        print(f"  - Domain status: {domain_ver}")
         return False
 
     except Exception as e:

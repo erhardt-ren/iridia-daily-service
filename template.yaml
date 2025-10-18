@@ -2,6 +2,12 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: Iridia Daily - Research Intelligence Newsletter
 
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+
 Parameters:
   SenderEmail:
     Type: String
@@ -23,8 +29,49 @@ Parameters:
     Description: Email for CloudWatch alarms
     Default: alerts@iridia-daily.com
 
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: "^[a-z0-9-]+$"
+    Description: Lowercase stage name (only lowercase letters, numbers, and hyphens)
+
 Resources:
-  # SES Contact List and Topic
+  # ==========================================
+  # API GATEWAY (explicitly defined, lowercase stage)
+  # ==========================================
+  IridiaApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: IridiaDailyApi
+      StageName: !Ref StageName
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'POST, GET, OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 40
+
+  # ==========================================
+  # SECRETS MANAGEMENT - SECURE STORAGE
+  # ==========================================
+  HMACSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-hmac-secret"
+      Description: HMAC secret key for email confirmation tokens
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: "key"
+        PasswordLength: 64
+        ExcludeCharacters: "\"@/\\"
+        RequireEachIncludedType: true
+
+  # ==========================================
+  # SES CONTACT LIST AND TOPIC
+  # ==========================================
   NewsletterContactList:
     Type: AWS::SES::ContactList
     Properties:
@@ -36,7 +83,9 @@ Resources:
           Description: Daily scientific research insights
           DefaultSubscriptionStatus: OPT_IN
 
-  # SNS Topic for CloudWatch Alarms
+  # ==========================================
+  # SNS TOPIC FOR ALERTS
+  # ==========================================
   AlertTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -46,12 +95,14 @@ Resources:
         - Endpoint: !Ref AlertEmail
           Protocol: email
 
-  # IAM Role for Lambda Functions
+  # ==========================================
+  # IAM ROLE WITH SECRETS ACCESS
+  # ==========================================
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -62,29 +113,66 @@ Resources:
       Policies:
         - PolicyName: NewsletterPolicy
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
+              # ==========================================
+              # SES Permissions (send, contact management)
+              # ==========================================
               - Effect: Allow
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
+                  - ses:SendBulkEmail
+                  - ses:SendBulkTemplatedEmail
+                  - ses:ListContacts
+                  - ses:GetContact
+                  - ses:CreateContact
+                  - ses:UpdateContact
+                  - ses:DeleteContact
+                  - ses:GetEmailIdentity
                   - ses:GetIdentityVerificationAttributes
-                  - sesv2:*
+                  - ses:GetTemplate
+                  - ses:CreateTemplate
+                  - ses:UpdateTemplate
                 Resource: "*"
-              
+
+              # ==========================================
+              # Bedrock Permissions
+              # ==========================================
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
                   - "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
-              
+
+              # ==========================================
+              # CloudWatch Metrics
+              # ==========================================
               - Effect: Allow
                 Action:
                   - cloudwatch:PutMetricData
                 Resource: "*"
 
-  # Newsletter Lambda Function
+              # ==========================================
+              # Secrets Manager (read-only)
+              # ==========================================
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref HMACSecret
+
+              # ==========================================
+              # CloudFormation (stack introspection)
+              # ==========================================
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
+  # ==========================================
+  # LAMBDA FUNCTIONS
+  # ==========================================
   NewsletterFunction:
     Type: AWS::Serverless::Function
     DependsOn: NewsletterContactList
@@ -92,7 +180,6 @@ Resources:
       FunctionName: iridia-daily-newsletter
       CodeUri: src/
       Handler: iridia_daily.newsletter_handler.lambda_handler
-      Runtime: python3.12
       Timeout: 300
       MemorySize: 512
       Role: !GetAtt LambdaExecutionRole.Arn
@@ -102,7 +189,8 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
-          API_URL: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+          HMAC_SECRET_ARN: !Ref HMACSecret
+          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         DailySchedule:
           Type: Schedule
@@ -111,7 +199,6 @@ Resources:
             Description: Daily newsletter at 7am EST
             Enabled: true
 
-  # Subscribe Lambda Function
   SubscribeFunction:
     Type: AWS::Serverless::Function
     DependsOn: NewsletterContactList
@@ -119,23 +206,41 @@ Resources:
       FunctionName: iridia-daily-subscribe
       CodeUri: src/
       Handler: iridia_daily.subscribe_handler.lambda_handler
-      Runtime: python3.12
-      Timeout: 30
-      MemorySize: 256
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
+          HMAC_SECRET_ARN: !Ref HMACSecret
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
+            RestApiId: !Ref IridiaApi
             Path: /subscribe
             Method: post
-            RestApiId: !Ref NewsletterApi
 
-  # Unsubscribe Lambda Function
+  ConfirmFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
+    Properties:
+      FunctionName: iridia-daily-confirm
+      CodeUri: src/
+      Handler: iridia_daily.confirm_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CONTACT_LIST_NAME: !Ref ContactListName
+          SENDER_EMAIL: !Ref SenderEmail
+          HMAC_SECRET_ARN: !Ref HMACSecret
+      Events:
+        ApiEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /confirm
+            Method: get
+
   UnsubscribeFunction:
     Type: AWS::Serverless::Function
     DependsOn: NewsletterContactList
@@ -143,41 +248,22 @@ Resources:
       FunctionName: iridia-daily-unsubscribe
       CodeUri: src/
       Handler: iridia_daily.unsubscribe_handler.lambda_handler
-      Runtime: python3.12
-      Timeout: 30
-      MemorySize: 256
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
           CONTACT_LIST_NAME: !Ref ContactListName
+          HMAC_SECRET_ARN: !Ref HMACSecret
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
+            RestApiId: !Ref IridiaApi
             Path: /unsubscribe
             Method: get
-            RestApiId: !Ref NewsletterApi
 
-  # API Gateway with Throttling
-  NewsletterApi:
-    Type: AWS::Serverless::Api
-    Properties:
-      StageName: prod
-      Cors:
-        AllowOrigin: "'*'"
-        AllowMethods: "'POST, GET, OPTIONS'"
-        AllowHeaders: "'Content-Type'"
-      MethodSettings:
-        - ResourcePath: /subscribe
-          HttpMethod: POST
-          ThrottlingRateLimit: 10
-          ThrottlingBurstLimit: 20
-        - ResourcePath: /unsubscribe
-          HttpMethod: GET
-          ThrottlingRateLimit: 10
-          ThrottlingBurstLimit: 20
-
-  # CloudWatch Alarms
+  # ==========================================
+  # CLOUDWATCH ALARMS
+  # ==========================================
   NewsletterErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -238,19 +324,29 @@ Outputs:
     Value: !Ref ContactListName
     Export:
       Name: !Sub "${AWS::StackName}-ContactListName"
-  
+
+  HMACSecretArn:
+    Description: ARN of HMAC secret in Secrets Manager
+    Value: !Ref HMACSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-HMACSecretArn"
+
   SubscribeEndpoint:
     Description: Subscription API endpoint
-    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod/subscribe"
-  
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/subscribe"
+
+  ConfirmEndpoint:
+    Description: Confirmation API endpoint
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/confirm"
+
   UnsubscribeEndpoint:
     Description: Unsubscribe API endpoint
-    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod/unsubscribe"
-  
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
+
   ApiUrl:
     Description: Base API URL
-    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
-  
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+
   AlertTopicArn:
     Description: SNS Topic for Alerts
     Value: !Ref AlertTopic

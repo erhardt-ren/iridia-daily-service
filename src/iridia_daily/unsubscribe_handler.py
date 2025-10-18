@@ -1,16 +1,21 @@
-"""Unsubscribe request handler with monitoring."""
+"""Unsubscribe request handler with secure token verification.
+
+Handles unsubscribe requests using tamper-proof tokens instead of
+plain email parameters to prevent unauthorized unsubscriptions.
+"""
 
 import json
 import boto3
 import os
 
 from . import monitoring
+from .token_utils import verify_unsubscribe_token
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
 
 def lambda_handler(event, context):
-    """Process unsubscribe request.
+    """Process unsubscribe request with token verification.
 
     Args:
         event: API Gateway event.
@@ -20,15 +25,30 @@ def lambda_handler(event, context):
         dict: HTML response with status.
     """
     params = event.get('queryStringParameters', {}) or {}
-    email = params.get('email', '').strip().lower()
+    token = params.get('token', '').strip()
 
-    if not email:
+    if not token:
         monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'InvalidRequest'}
         ])
         return render_html(400, 'Invalid Request',
                            '<h1>Invalid Unsubscribe Link</h1>'
-                           '<p>Please provide an email address.</p>')
+                           '<p>This unsubscribe link is not valid. '
+                           'Please use the link from your newsletter email.</p>')
+
+    # Verify token and extract email
+    email = verify_unsubscribe_token(token)
+
+    if not email:
+        monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'InvalidToken'}
+        ])
+        return render_html(400, 'Invalid Link',
+                           '<h1>Invalid Unsubscribe Link</h1>'
+                           '<p>This unsubscribe link is invalid or has been '
+                           'tampered with.</p>'
+                           '<p>Please use the unsubscribe link from your most '
+                           'recent newsletter email.</p>')
 
     contact_list_name = os.environ.get('CONTACT_LIST_NAME')
 
@@ -79,7 +99,8 @@ def lambda_handler(event, context):
                                'background: #f8f9fa; border-radius: 8px;">'
                                '<p style="margin: 0; color: #6c757d; '
                                'font-size: 14px;">'
-                               'Changed your mind? Resubscribe at iridia-daily.com'
+                               'Changed your mind? You can resubscribe at '
+                               'iridia-daily.com'
                                '</p></div>')
 
         except ses_v2.exceptions.NotFoundException:
@@ -89,7 +110,7 @@ def lambda_handler(event, context):
             return render_html(404, 'Not Found',
                                '<h1>Subscription Not Found</h1>'
                                '<p>We couldn\'t find a subscription for '
-                               'this email.</p>')
+                               'this email address.</p>')
 
     except Exception as e:
         print(f"Unsubscribe error: {e}")
@@ -98,7 +119,8 @@ def lambda_handler(event, context):
         ])
         return render_html(500, 'Error',
                            '<h1>Something Went Wrong</h1>'
-                           '<p>Please try again later.</p>')
+                           '<p>We couldn\'t complete your unsubscribe request. '
+                           'Please try again later.</p>')
 
 
 def render_html(status_code, title, content):
