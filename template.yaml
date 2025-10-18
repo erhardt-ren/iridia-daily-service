@@ -1,28 +1,53 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Iridia Daily Research Intelligence Service
+Description: Iridia Daily - Research Intelligence Newsletter
 
 Parameters:
   SenderEmail:
     Type: String
-    Description: Your verified IridiaDaily sender email address
+    Description: Verified sender email address
     Default: research@iridia-daily.com
 
-  RecipientEmail:
+  ContactListName:
     Type: String
-    Description: Your personal email address
-    Default: alex.howelljr@gmail.com # Need to change to mailing list....
+    Description: SES Contact List name
+    Default: iridia-daily-subscribers
+
+  RecipientDisplay:
+    Type: String
+    Description: Display name for To field
+    Default: "Iridia Daily Readers"
+
+  AlertEmail:
+    Type: String
+    Description: Email for CloudWatch alarms
+    Default: alerts@iridia-daily.com
 
 Resources:
-  # SNS Topic
-  IridiaDailyTopic:
+  # SES Contact List and Topic
+  NewsletterContactList:
+    Type: AWS::SES::ContactList
+    Properties:
+      ContactListName: !Ref ContactListName
+      Description: Iridia Daily newsletter subscribers
+      Topics:
+        - TopicName: daily-research
+          DisplayName: Daily Research Newsletter
+          Description: Daily scientific research insights
+          DefaultSubscriptionStatus: OPT_IN
+
+  # SNS Topic for CloudWatch Alarms
+  AlertTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: iridiadaily-subscribers
-      DisplayName: Iridia Daily Subscribers
+      TopicName: iridia-daily-alerts
+      DisplayName: Iridia Daily Alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
 
-  # IAM Role for Lambda Function
-  IridiaDailyLambdaExecutionRole:
+  # IAM Role for Lambda Functions
+  LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -34,95 +59,200 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Tags:
-        - Key: Application
-          Value: IridiaDaily 
-        - Key: Purpose
-          Value: Lambda execution role for IridiaDaily research intelligence
       Policies:
-        - PolicyName: IridiaDailyLambdaPolicy
+        - PolicyName: NewsletterPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # SES permissions
               - Effect: Allow
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
-                  - ses:GetSendQuota
-                  - ses:GetSendStatistics
+                  - ses:GetIdentityVerificationAttributes
+                  - sesv2:*
                 Resource: "*"
-                Condition:
-                  StringEquals:
-                    'ses:FromAddress': !Ref SenderEmail
-              
-              # SNS permissions
-              - Effect: Allow
-                Action:
-                  - sns:Publish
-                Resource: !Ref IridiaDailyTopic
-              
-              # Bedrock permissions
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                Resource: 
-                  - !Sub "arn:aws:bedrock:us-east-1:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
               
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                Resource: 
-                  - "arn:aws:bedrock:us-*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
               
               - Effect: Allow
                 Action:
-                  - bedrock:GetFoundationModel
-                  - bedrock:ListFoundationModels
+                  - cloudwatch:PutMetricData
                 Resource: "*"
 
-  # Lambda Function
-  ResearchGeneratorFunction:
+  # Newsletter Lambda Function
+  NewsletterFunction:
     Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
     Properties:
-      FunctionName: iridia-daily-generator
+      FunctionName: iridia-daily-newsletter
       CodeUri: src/
-      Handler: iridia_daily.lambda_function.lambda_handler
+      Handler: iridia_daily.newsletter_handler.lambda_handler
       Runtime: python3.12
-      Timeout: 60
+      Timeout: 300
       MemorySize: 512
-      Role: !GetAtt IridiaDailyLambdaExecutionRole.Arn
+      Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
-          SNS_TOPIC_ARN: !Ref IridiaDailyTopic
           SENDER_EMAIL: !Ref SenderEmail
-          RECIPIENT_EMAIL: !Ref RecipientEmail
+          CONTACT_LIST_NAME: !Ref ContactListName
+          RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
+          API_URL: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
       Events:
-        DailyTrigger:
+        DailySchedule:
           Type: Schedule
           Properties:
             Schedule: cron(0 11 * * ? *)
-            Description: Trigger daily Iridia Daily research intelligence
+            Description: Daily newsletter at 7am EST
             Enabled: true
 
+  # Subscribe Lambda Function
+  SubscribeFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
+    Properties:
+      FunctionName: iridia-daily-subscribe
+      CodeUri: src/
+      Handler: iridia_daily.subscribe_handler.lambda_handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CONTACT_LIST_NAME: !Ref ContactListName
+          SENDER_EMAIL: !Ref SenderEmail
+      Events:
+        ApiEndpoint:
+          Type: Api
+          Properties:
+            Path: /subscribe
+            Method: post
+            RestApiId: !Ref NewsletterApi
+
+  # Unsubscribe Lambda Function
+  UnsubscribeFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
+    Properties:
+      FunctionName: iridia-daily-unsubscribe
+      CodeUri: src/
+      Handler: iridia_daily.unsubscribe_handler.lambda_handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CONTACT_LIST_NAME: !Ref ContactListName
+      Events:
+        ApiEndpoint:
+          Type: Api
+          Properties:
+            Path: /unsubscribe
+            Method: get
+            RestApiId: !Ref NewsletterApi
+
+  # API Gateway with Throttling
+  NewsletterApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'POST, GET, OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+      MethodSettings:
+        - ResourcePath: /subscribe
+          HttpMethod: POST
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+        - ResourcePath: /unsubscribe
+          HttpMethod: GET
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+
+  # CloudWatch Alarms
+  NewsletterErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-newsletter-errors
+      AlarmDescription: Alert on newsletter generation errors
+      MetricName: NewsletterGeneration
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Status
+          Value: Error
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  SubscriptionFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-subscription-failures
+      AlarmDescription: Alert on subscription failures
+      MetricName: SubscriptionAttempt
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Status
+          Value: Error
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  NewsletterDeliveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: iridia-newsletter-low-delivery
+      AlarmDescription: Alert when newsletter delivery drops
+      MetricName: NewsletterDelivered
+      Namespace: IridiaDaily
+      Statistic: Sum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
+
 Outputs:
-  SNSTopicArn:
-    Description: SNS Topic ARN for Iridia Daily subscriptions
-    Value: !Ref IridiaDailyTopic
-
-  FunctionName:
-    Description: Lambda Function Name
-    Value: !Ref ResearchGeneratorFunction
-
-  LambdaExecutionRoleArn:
-    Description: Lambda Execution Role ARN
-    Value: !GetAtt IridiaDailyLambdaExecutionRole.Arn
-
-  SenderEmail:
-    Description: Iridia Daily sender email (must be verified in SES)
-    Value: !Ref SenderEmail
-
-  RecipientEmail:
-    Description: Current recipient email
-    Value: !Ref RecipientEmail
+  ContactListName:
+    Description: SES Contact List Name
+    Value: !Ref ContactListName
+    Export:
+      Name: !Sub "${AWS::StackName}-ContactListName"
+  
+  SubscribeEndpoint:
+    Description: Subscription API endpoint
+    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod/subscribe"
+  
+  UnsubscribeEndpoint:
+    Description: Unsubscribe API endpoint
+    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod/unsubscribe"
+  
+  ApiUrl:
+    Description: Base API URL
+    Value: !Sub "https://${NewsletterApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  
+  AlertTopicArn:
+    Description: SNS Topic for Alerts
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AlertTopic"

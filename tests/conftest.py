@@ -6,27 +6,47 @@ import pytest
 from unittest.mock import Mock
 import json
 
-# Add src directory to Python path so we can import from iridia_daily
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-
-# ==========================================
-# Environment Setup
-# ==========================================
 
 @pytest.fixture(autouse=True)
 def setup_env(monkeypatch):
     """Set up test environment variables."""
     monkeypatch.setenv('SENDER_EMAIL', 'research@iridia-daily.com')
-    monkeypatch.setenv('RECIPIENT_EMAIL', 'test@example.com')
-    monkeypatch.setenv('SNS_TOPIC_ARN', 'arn:aws:sns:us-east-1:123456789:test-topic')
+    monkeypatch.setenv('CONTACT_LIST_NAME', 'iridia-daily-subscribers')
+    monkeypatch.setenv('RECIPIENT_DISPLAY', 'Iridia Daily Readers <research@iridia-daily.com>')
     monkeypatch.setenv('AWS_BEDROCK_REGION', 'us-east-1')
     monkeypatch.setenv('AWS_REGION', 'us-east-1')
+    monkeypatch.setenv('API_URL', 'https://test-api.execute-api.us-east-1.amazonaws.com/prod')
 
 
-# ==========================================
-# Sample Data
-# ==========================================
+@pytest.fixture(autouse=True)
+def mock_monitoring(request, monkeypatch):
+    """Mock monitoring utilities to prevent actual AWS calls.
+    
+    Skips mocking for test_monitoring.py so those tests can test real functions.
+    """
+    # Skip mocking if we're in the monitoring test file
+    if 'test_monitoring' in request.node.nodeid:
+        yield
+        return
+    
+    # For all other tests, mock the monitoring functions
+    def mock_put_metric(*args, **kwargs):
+        pass
+    
+    def mock_retry(func, *args, **kwargs):
+        return func()
+    
+    def mock_verify_sender(*args, **kwargs):
+        return True
+    
+    monkeypatch.setattr('iridia_daily.monitoring.put_metric', mock_put_metric)
+    monkeypatch.setattr('iridia_daily.monitoring.retry_with_backoff', mock_retry)
+    monkeypatch.setattr('iridia_daily.monitoring.verify_ses_sender', mock_verify_sender)
+    
+    yield  # <-- CRITICAL: Must yield here too!
+
 
 @pytest.fixture
 def sample_paper():
@@ -189,10 +209,6 @@ def comprehensive_pubmed_xml():
 </PubmedArticleSet>"""
 
 
-# ==========================================
-# Mock Factories
-# ==========================================
-
 @pytest.fixture
 def mock_pubmed_search():
     """Factory for mocking PubMed search responses."""
@@ -219,9 +235,26 @@ def mock_pubmed_fetch():
     return create_mock
 
 
-# ==========================================
-# Assertion Helpers
-# ==========================================
+@pytest.fixture
+def mock_ses_subscribers():
+    """Factory for mocking SES subscriber list."""
+    def create_mock(emails, all_opted_in=True):
+        mock_paginator = Mock()
+        contacts = []
+        for email in emails:
+            contacts.append({
+                'EmailAddress': email,
+                'TopicPreferences': [{
+                    'TopicName': 'daily-research',
+                    'SubscriptionStatus': 'OPT_IN' if all_opted_in else 'OPT_OUT'
+                }],
+                'CreatedTimestamp': '2024-01-01T00:00:00Z'
+            })
+        
+        mock_paginator.paginate.return_value = [{'Contacts': contacts}]
+        return mock_paginator
+    return create_mock
+
 
 @pytest.fixture
 def assert_email_structure():
@@ -236,11 +269,20 @@ def assert_email_structure():
     return _assert
 
 
-# ==========================================
-# Test Configuration
-# ==========================================
+@pytest.fixture
+def assert_cors_headers():
+    """Validate CORS headers in API response."""
+    def _assert(response):
+        headers = response.get('headers', {})
+        assert 'Access-Control-Allow-Origin' in headers
+        assert headers['Access-Control-Allow-Origin'] == '*'
+        assert 'Access-Control-Allow-Methods' in headers
+        assert 'Content-Type' in headers
+    return _assert
+
 
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line("markers", "e2e: end-to-end tests")
     config.addinivalue_line("markers", "slow: slow running tests")
+    config.addinivalue_line("markers", "integration: integration tests requiring AWS mocks")
