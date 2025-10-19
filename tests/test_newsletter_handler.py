@@ -542,3 +542,406 @@ class TestEmailValidation:
         from iridia_daily.newsletter_handler import is_valid_email
 
         assert is_valid_email(email) == expected
+        
+class TestNewsletterValidation:
+    """Test newsletter validation and error handling."""
+
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_fails_on_summary_count_mismatch(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, sample_papers_diverse, monkeypatch
+    ):
+        """Test newsletter fails when summary count doesn't match papers."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock PubMed to return 5 papers
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = sample_papers_diverse
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return ONLY 3 summaries (mismatch!)
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = [
+            'Summary one with sufficient length for validation here.',
+            'Summary two also has enough characters for the check.',
+            'Summary three is the last one but we need five total.'
+        ]
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        result = lambda_handler({}, {})
+
+        # Should return error
+        assert result['statusCode'] == 500
+        body = json.loads(result['body'])
+        assert 'validation failed' in body['error'].lower()
+        assert body['expected_summaries'] == 5
+        assert body['received_summaries'] == 3
+
+        # Should send SNS alert
+        mock_alert.assert_called_once()
+        alert_call = mock_alert.call_args
+        assert 'Summary generation validation failed' in alert_call[1]['message']
+        assert '🚨' in alert_call[1]['subject']
+
+        # Should NOT send any emails
+        mock_ses_v2.send_bulk_email.assert_not_called()
+
+    @patch('iridia_daily.newsletter_handler.generate_unsubscribe_token')
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_succeeds_with_valid_summaries(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, mock_token, sample_papers_diverse, monkeypatch
+    ):
+        """Test newsletter succeeds when summaries are valid."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock token generation
+        mock_token.side_effect = lambda email: f'token-{email}'
+
+        # Mock PubMed to return 5 papers
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = sample_papers_diverse
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return exactly 5 valid summaries
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = [
+            'Valid summary one with more than fifty characters here.',
+            'Valid summary two that meets the minimum length requirement.',
+            'Valid summary three also exceeds the fifty character minimum.',
+            'Valid summary four is properly formatted with sufficient length.',
+            'Valid summary five and final summary also has enough characters.'
+        ]
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        # Mock successful email sending
+        mock_ses_v2.send_bulk_email.return_value = {
+            'BulkEmailEntryResults': [
+                {'Status': 'SUCCESS', 'MessageId': 'msg-1'}
+            ]
+        }
+
+        result = lambda_handler({}, {})
+
+        # Should succeed
+        assert result['statusCode'] == 200
+
+        # Should NOT send alert (no validation failure)
+        mock_alert.assert_not_called()
+
+        # Should send newsletter
+        mock_ses_v2.send_bulk_email.assert_called_once()
+
+    @patch('iridia_daily.newsletter_handler.generate_unsubscribe_token')
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_logs_quality_warnings(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, mock_token, monkeypatch, capfd
+    ):
+        """Test newsletter logs warnings for poor quality summaries."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock token generation
+        mock_token.side_effect = lambda email: f'token-{email}'
+
+        # Mock PubMed to return 2 papers
+        papers = [
+            {
+                'pmid': '12345',
+                'title': 'Paper 1',
+                'abstract': 'Abstract 1',
+                'journal': 'Journal 1',
+                'year': '2024',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/12345/'
+            },
+            {
+                'pmid': '67890',
+                'title': 'Paper 2',
+                'abstract': 'Abstract 2',
+                'journal': 'Journal 2',
+                'year': '2024',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/67890/'
+            }
+        ]
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = papers
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return summaries with quality issues
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = [
+            'Too short',  # Only 9 characters - should trigger warning
+            'This one is perfectly fine with enough characters to pass the check.'
+        ]
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        # Mock successful email sending
+        mock_ses_v2.send_bulk_email.return_value = {
+            'BulkEmailEntryResults': [
+                {'Status': 'SUCCESS', 'MessageId': 'msg-1'}
+            ]
+        }
+
+        result = lambda_handler({}, {})
+
+        # Should succeed (warnings don't fail newsletter)
+        assert result['statusCode'] == 200
+
+        # Should log warning about short summary
+        captured = capfd.readouterr()
+        assert 'WARNING' in captured.out
+        assert 'too short' in captured.out.lower()
+
+        # Should still send newsletter despite warnings
+        mock_ses_v2.send_bulk_email.assert_called_once()
+
+    @patch('iridia_daily.newsletter_handler.monitoring')
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_publishes_metrics_on_validation_failure(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, mock_monitoring, monkeypatch
+    ):
+        """Test proper metrics are published on validation failure."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock PubMed to return 3 papers
+        papers = [
+            {
+                'pmid': '12345',
+                'title': 'Paper 1',
+                'abstract': 'Abstract 1',
+                'journal': 'Journal 1',
+                'year': '2024',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/12345/'
+            },
+            {
+                'pmid': '67890',
+                'title': 'Paper 2',
+                'abstract': 'Abstract 2',
+                'journal': 'Journal 2',
+                'year': '2024',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/67890/'
+            },
+            {
+                'pmid': '11111',
+                'title': 'Paper 3',
+                'abstract': 'Abstract 3',
+                'journal': 'Journal 3',
+                'year': '2024',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/11111/'
+            }
+        ]
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = papers
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return wrong number of summaries (only 1 instead of 3)
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = [
+            'Only one summary when three papers were provided here.'
+        ]
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        lambda_handler({}, {})
+
+        # Check that correct metrics were published
+        metric_calls = mock_monitoring.put_metric.call_args_list
+
+        # Should publish SummaryGenerationFailed metric
+        summary_failed_calls = [
+            call for call in metric_calls
+            if call[0][0] == 'SummaryGenerationFailed'
+        ]
+        assert len(summary_failed_calls) == 1
+        assert summary_failed_calls[0][0][1] == 1  # Value is 1
+
+        # Should publish NewsletterGeneration failure metric
+        newsletter_failed_calls = [
+            call for call in metric_calls
+            if call[0][0] == 'NewsletterGeneration'
+            and call[1].get('dimensions', [{}])[0].get('Value') == 'SummaryValidationFailed'
+        ]
+        assert len(newsletter_failed_calls) == 1
+
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_alert_includes_details(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, monkeypatch
+    ):
+        """Test SNS alert includes detailed failure information."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock PubMed to return 4 papers
+        papers = [
+            {
+                'pmid': str(i),
+                'title': f'Paper {i}',
+                'abstract': f'Abstract {i}',
+                'journal': f'Journal {i}',
+                'year': '2024',
+                'url': f'https://pubmed.ncbi.nlm.nih.gov/{i}/'
+            }
+            for i in range(1, 5)
+        ]
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = papers
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return only 2 summaries for 4 papers
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = [
+            'Summary one with sufficient length for validation here.',
+            'Summary two also has enough characters for the check.'
+        ]
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        lambda_handler({}, {})
+
+        mock_alert.assert_called_once()
+        alert_call = mock_alert.call_args
+
+        # Check message content
+        message = alert_call[1]['message']
+        assert 'Papers retrieved: 4' in message
+        assert 'Summaries generated: 2' in message
+        assert 'Timestamp:' in message
+
+        # Check subject
+        subject = alert_call[1]['subject']
+        assert '🚨' in subject
+        assert 'Summary Generation Failed' in subject
+
+    @patch('iridia_daily.newsletter_handler.generate_unsubscribe_token')
+    @patch('iridia_daily.newsletter_handler.send_alert_notification')
+    @patch('iridia_daily.newsletter_handler.BedrockClient')
+    @patch('iridia_daily.newsletter_handler.PubMedClient')
+    @patch('iridia_daily.newsletter_handler.ses_v2')
+    def test_newsletter_with_zero_summaries(
+        self, mock_ses_v2, mock_pubmed_class, mock_bedrock_class,
+        mock_alert, mock_token, sample_papers_diverse, monkeypatch
+    ):
+        """Test newsletter fails when Bedrock returns empty list."""
+        from iridia_daily.newsletter_handler import lambda_handler
+
+        monkeypatch.setenv('API_URL', 'https://api.test.com/prod')
+
+        # Mock PubMed to return 5 papers
+        mock_pubmed = Mock()
+        mock_pubmed.get_recent_papers.return_value = sample_papers_diverse
+        mock_pubmed_class.return_value = mock_pubmed
+
+        # Mock Bedrock to return empty list
+        mock_bedrock = Mock()
+        mock_bedrock.generate_summaries.return_value = []
+        mock_bedrock_class.return_value = mock_bedrock
+
+        # Mock subscribers
+        mock_ses_v2.list_contacts.return_value = {
+            'Contacts': [
+                {
+                    'EmailAddress': 'user@test.com',
+                    'TopicPreferences': [
+                        {'SubscriptionStatus': 'OPT_IN'}
+                    ]
+                }
+            ]
+        }
+
+        result = lambda_handler({}, {})
+
+        # Should return error
+        assert result['statusCode'] == 500
+        body = json.loads(result['body'])
+        assert body['expected_summaries'] == 5
+        assert body['received_summaries'] == 0
+
+        # Should send alert
+        mock_alert.assert_called_once()
+
+        # Should not send emails
+        mock_ses_v2.send_bulk_email.assert_not_called()
