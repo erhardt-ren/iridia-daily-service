@@ -7,62 +7,54 @@ from unittest.mock import Mock, patch
 
 @pytest.fixture
 def api_gateway_event():
-    """API Gateway proxy event with requestContext."""
+    """Basic API Gateway proxy event for subscription tests."""
     return {
         'httpMethod': 'POST',
-        'body': json.dumps({'email': 'test@example.com'}),
-        'requestContext': {
-            'apiId': 'abc123xyz',
-            'domainName': 'abc123xyz.execute-api.us-east-1.amazonaws.com',
-            'stage': 'prod'
-        }
+        'body': json.dumps({'email': 'test@example.com'})
     }
 
 
 class TestGetApiUrl:
-    """Test API URL extraction from event."""
+    """Test API URL retrieval from environment."""
 
-    def test_extracts_from_domain_name(self):
-        """Test URL extraction using domainName."""
+    def test_get_api_url_from_environment(self, monkeypatch):
+        """Test API URL retrieval from environment variable."""
         from iridia_daily.subscribe_handler import get_api_url
 
-        event = {
-            'requestContext': {
-                'domainName': 'abc123.execute-api.us-east-1.amazonaws.com',
-                'stage': 'prod'
-            }
-        }
+        expected_url = 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
+        monkeypatch.setenv('API_URL', expected_url)
 
-        url = get_api_url(event)
+        url = get_api_url()
 
-        assert url == 'https://abc123.execute-api.us-east-1.amazonaws.com/prod'
+        assert url == expected_url
 
-    def test_extracts_from_api_id(self, monkeypatch):
-        """Test URL extraction using apiId when domainName missing."""
+    def test_get_api_url_missing_raises_error(self, monkeypatch):
+        """Test that missing API_URL raises ValueError."""
         from iridia_daily.subscribe_handler import get_api_url
 
-        monkeypatch.setenv('AWS_REGION', 'us-east-1')
+        monkeypatch.delenv('API_URL', raising=False)
 
-        event = {
-            'requestContext': {
-                'apiId': 'xyz789',
-                'stage': 'prod'
-            }
-        }
+        with pytest.raises(ValueError, match="API_URL environment variable is not set"):
+            get_api_url()
 
-        url = get_api_url(event)
-
-        assert url == 'https://xyz789.execute-api.us-east-1.amazonaws.com/prod'
-
-    def test_handles_missing_context(self):
-        """Test graceful handling of missing requestContext."""
+    def test_get_api_url_strips_whitespace(self, monkeypatch):
+        """Test that API URL is stripped of whitespace."""
         from iridia_daily.subscribe_handler import get_api_url
 
-        event = {}
+        monkeypatch.setenv('API_URL', '  https://api.example.com/prod  ')
 
-        url = get_api_url(event)
+        url = get_api_url()
 
-        assert url == ""
+        assert url == 'https://api.example.com/prod'
+
+    def test_get_api_url_empty_string_raises_error(self, monkeypatch):
+        """Test that empty API_URL raises ValueError."""
+        from iridia_daily.subscribe_handler import get_api_url
+
+        monkeypatch.setenv('API_URL', '   ')
+
+        with pytest.raises(ValueError, match="API_URL environment variable is not set"):
+            get_api_url()
 
 
 class TestSubscribeHandler:
@@ -137,9 +129,13 @@ class TestSubscribeHandler:
     @patch('iridia_daily.subscribe_handler.generate_confirmation_token')
     @patch('iridia_daily.subscribe_handler.ses_v2')
     def test_confirmation_url_includes_token(self, mock_ses_v2, mock_token,
-                                             api_gateway_event):
+                                             api_gateway_event, monkeypatch):
         """Test that confirmation email includes correct URL with token."""
         from iridia_daily.subscribe_handler import lambda_handler
+
+        # Set API URL explicitly for this test
+        monkeypatch.setenv('API_URL',
+            'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod')
 
         mock_ses_v2.exceptions.NotFoundException = type(
             'NotFoundException', (Exception,), {}

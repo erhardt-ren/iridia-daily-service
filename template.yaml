@@ -162,14 +162,6 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref HMACSecret
 
-              # ==========================================
-              # CloudFormation (stack introspection)
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - cloudformation:DescribeStacks
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-
   # ==========================================
   # LAMBDA FUNCTIONS
   # ==========================================
@@ -190,7 +182,6 @@ Resources:
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
           HMAC_SECRET_ARN: !Ref HMACSecret
-          ALERT_TOPIC_ARN: !Ref AlertTopic
           API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         DailySchedule:
@@ -213,6 +204,7 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
@@ -234,6 +226,7 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
@@ -254,6 +247,7 @@ Resources:
         Variables:
           CONTACT_LIST_NAME: !Ref ContactListName
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
