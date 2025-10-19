@@ -190,6 +190,7 @@ Resources:
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
           HMAC_SECRET_ARN: !Ref HMACSecret
+          ALERT_TOPIC_ARN: !Ref AlertTopic
           API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         DailySchedule:

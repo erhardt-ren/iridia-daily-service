@@ -17,6 +17,8 @@ def setup_env(monkeypatch):
     monkeypatch.setenv('RECIPIENT_DISPLAY', 'Iridia Daily Readers <research@iridia-daily.com>')
     monkeypatch.setenv('AWS_BEDROCK_REGION', 'us-east-1')
     monkeypatch.setenv('AWS_REGION', 'us-east-1')
+    monkeypatch.setenv('ALERT_TOPIC_ARN', 'arn:aws:sns:us-east-1:123456789012:iridia-daily-alerts')
+    monkeypatch.setenv('HMAC_SECRET_ARN', 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret')
 
 
 @pytest.fixture(autouse=True)

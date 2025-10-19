@@ -161,6 +161,51 @@ def lambda_handler(event, context):
     bedrock = BedrockClient()
     summaries = bedrock.generate_summaries(papers)
 
+    # Validate that summary generation produced correct number of summaries
+    # with acceptable quality. Do not proceed with newsletter if validation
+    # fails to prevent sending incomplete or incorrect content.
+    if not validate_summaries(summaries, papers):
+        error_msg = (
+            f"Summary generation validation failed. "
+            f"Expected {len(papers)} summaries, received {len(summaries)}. "
+            f"Newsletter distribution aborted to prevent sending incomplete "
+            f"content to subscribers."
+        )
+        
+        print(f"ERROR: {error_msg}")
+        
+        # Publish CloudWatch metric for monitoring and alerting
+        monitoring.put_metric('SummaryGenerationFailed', 1, dimensions=[
+            {'Name': 'Reason', 'Value': 'CountMismatch'}
+        ])
+        
+        # Send immediate SNS alert to operations team
+        send_alert_notification(
+            message=(
+                f"{error_msg}\n\n"
+                f"Papers retrieved: {len(papers)}\n"
+                f"Summaries generated: {len(summaries)}\n"
+                f"Timestamp: {datetime.now().isoformat()}"
+            ),
+            subject="🚨 Iridia Daily: Summary Generation Failed"
+        )
+        
+        # Record failure in metrics and return error without sending newsletter
+        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'SummaryValidationFailed'}
+        ])
+        
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'error': 'Summary generation validation failed',
+                'expected_summaries': len(papers),
+                'received_summaries': len(summaries)
+            })
+        }
+
+    print(f"Summary validation passed: {len(summaries)} summaries generated")
+
     while len(summaries) < len(papers):
         summaries.append("Breakthrough research published.")
 
@@ -402,3 +447,78 @@ def is_valid_email(email):
         return False
 
     return True
+
+def validate_summaries(summaries, papers):
+    """Validate generated summaries against papers.
+    
+    Ensures each paper has a corresponding summary and checks quality
+    metrics. Logs warnings for summaries outside recommended bounds but
+    only fails validation if count mismatch occurs.
+    
+    Args:
+        summaries: List of generated summary strings.
+        papers: List of paper dictionaries.
+    
+    Returns:
+        bool: True if summary count matches paper count, False otherwise.
+    """
+    # Critical validation: count must match exactly
+    if len(summaries) != len(papers):
+        print(
+            f"ERROR: Summary count mismatch - Expected {len(papers)} "
+            f"summaries but received {len(summaries)}"
+        )
+        return False
+    
+    # Quality checks: log warnings but don't fail
+    for i, summary in enumerate(summaries):
+        if not isinstance(summary, str):
+            print(f"WARNING: Summary {i + 1} is not a string type")
+            continue
+            
+        summary_len = len(summary)
+        
+        if summary_len < 50:
+            print(
+                f"WARNING: Summary {i + 1} is too short ({summary_len} "
+                f"characters). Minimum recommended: 50 characters. "
+                f"Preview: {summary[:30]}..."
+            )
+        
+        if summary_len > 1000:
+            print(
+                f"WARNING: Summary {i + 1} is too long ({summary_len} "
+                f"characters). Maximum recommended: 1000 characters. "
+                f"Preview: {summary[:50]}..."
+            )
+    
+    return True
+
+
+def send_alert_notification(message, subject="Iridia Daily Alert"):
+    """Send SNS alert notification for critical failures.
+    
+    Publishes alert message to configured SNS topic for operational
+    monitoring. Handles errors gracefully to avoid blocking the main
+    execution flow.
+    
+    Args:
+        message: Alert message content describing the failure.
+        subject: Alert subject line (default: "Iridia Daily Alert").
+    """
+    alert_topic_arn = os.environ.get('ALERT_TOPIC_ARN')
+    
+    if not alert_topic_arn:
+        print("WARNING: ALERT_TOPIC_ARN not configured, skipping SNS alert")
+        return
+    
+    try:
+        sns = boto3.client('sns', region_name='us-east-1')
+        sns.publish(
+            TopicArn=alert_topic_arn,
+            Message=message,
+            Subject=subject
+        )
+        print(f"Alert notification sent to SNS topic: {alert_topic_arn}")
+    except Exception as e:
+        print(f"ERROR: Failed to send SNS alert: {e}")
