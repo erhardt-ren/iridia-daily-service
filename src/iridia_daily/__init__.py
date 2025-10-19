@@ -17,6 +17,7 @@ from . import monitoring
 from . import utils
 from . import config
 from . import token_utils
+from . import logger
 
 __all__ = [
     'newsletter_handler',
@@ -28,4 +29,5 @@ __all__ = [
     'utils',
     'config',
     'token_utils',
+    'logger',
 ]

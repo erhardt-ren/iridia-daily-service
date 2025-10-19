@@ -23,6 +23,46 @@ def setup_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def mock_logger(request, monkeypatch):
+    """Mock logger functions to prevent JSON output during tests.
+    
+    Skips mocking for test_logger.py to allow testing the actual logger.
+    """
+    # Skip mocking if we're in the logger test file
+    if 'test_logger' in request.node.nodeid:
+        yield
+        return
+    
+    # Mock all logger functions
+    def mock_set_lambda_context(context):
+        pass
+    
+    def mock_log_event(event_type, level='INFO', **kwargs):
+        pass
+    
+    def mock_log_info(event_type, **kwargs):
+        pass
+    
+    def mock_log_warning(event_type, **kwargs):
+        pass
+    
+    def mock_log_error(event_type, **kwargs):
+        pass
+    
+    def mock_log_metric(metric_name, value, unit='None', **kwargs):
+        pass
+    
+    monkeypatch.setattr('iridia_daily.logger.set_lambda_context', mock_set_lambda_context)
+    monkeypatch.setattr('iridia_daily.logger.log_event', mock_log_event)
+    monkeypatch.setattr('iridia_daily.logger.log_info', mock_log_info)
+    monkeypatch.setattr('iridia_daily.logger.log_warning', mock_log_warning)
+    monkeypatch.setattr('iridia_daily.logger.log_error', mock_log_error)
+    monkeypatch.setattr('iridia_daily.logger.log_metric', mock_log_metric)
+    
+    yield
+
+
+@pytest.fixture(autouse=True)
 def mock_monitoring(request, monkeypatch):
     """Mock monitoring utilities to prevent actual AWS calls.
     

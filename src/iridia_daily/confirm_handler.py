@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from . import monitoring
 from .token_utils import verify_confirmation_token
+from .logger import set_lambda_context, log_info, log_warning, log_error
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
@@ -27,10 +28,15 @@ def lambda_handler(event, context):
     Returns:
         dict: HTML response with confirmation status.
     """
+    set_lambda_context(context)
+    
     params = event.get('queryStringParameters', {}) or {}
     token = params.get('token', '').strip()
     
+    log_info('confirmation_request', has_token=bool(token))
+    
     if not token:
+        log_warning('confirmation_missing_token')
         monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'InvalidRequest'}
         ])
@@ -42,6 +48,7 @@ def lambda_handler(event, context):
     email = verify_confirmation_token(token)
     
     if not email:
+        log_warning('confirmation_invalid_token', token_length=len(token))
         monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'InvalidToken'}
         ])
@@ -50,6 +57,8 @@ def lambda_handler(event, context):
                           '<p>This confirmation link is invalid or has expired.</p>'
                           '<p>Please subscribe again to receive a new '
                           'confirmation email.</p>')
+    
+    log_info('confirmation_token_verified', email=email)
     
     contact_list_name = os.environ.get('CONTACT_LIST_NAME')
     
@@ -64,6 +73,7 @@ def lambda_handler(event, context):
             topic_prefs = existing.get('TopicPreferences', [{}])[0]
             
             if topic_prefs.get('SubscriptionStatus') == 'OPT_IN':
+                log_info('already_confirmed', email=email)
                 monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
                     {'Name': 'Status', 'Value': 'AlreadyConfirmed'}
                 ])
@@ -86,7 +96,7 @@ def lambda_handler(event, context):
             
             monitoring.retry_with_backoff(update_contact, max_attempts=3)
             
-            print(f"Reactivated subscription: {email}")
+            log_info('subscription_reactivated', email=email)
             monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
                 {'Name': 'Status', 'Value': 'Reactivated'}
             ])
@@ -99,7 +109,7 @@ def lambda_handler(event, context):
                               'starting tomorrow.</p>')
         
         except ses_v2.exceptions.NotFoundException:
-            pass
+            log_info('new_subscriber', email=email)
         
         # Create new contact
         def create_contact():
@@ -118,7 +128,7 @@ def lambda_handler(event, context):
         
         monitoring.retry_with_backoff(create_contact, max_attempts=3)
         
-        print(f"Confirmed subscription: {email}")
+        log_info('subscription_confirmed', email=email)
         monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Success'}
         ])
@@ -139,7 +149,10 @@ def lambda_handler(event, context):
                           '</p></div>')
     
     except Exception as e:
-        print(f"Confirmation error: {e}")
+        log_error('confirmation_error',
+                  email=email,
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         monitoring.put_metric('ConfirmationAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Error'}
         ])
@@ -205,8 +218,13 @@ def send_welcome_email(email):
         monitoring.retry_with_backoff(send_email, max_attempts=2)
         monitoring.put_metric('WelcomeEmailSent', 1)
         
+        log_info('welcome_email_sent', email=email)
+        
     except Exception as e:
-        print(f"Welcome email error: {e}")
+        log_error('welcome_email_failed',
+                  email=email,
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         monitoring.put_metric('WelcomeEmailFailed', 1)
 
 

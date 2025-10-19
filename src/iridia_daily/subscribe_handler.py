@@ -11,6 +11,7 @@ import re
 
 from . import monitoring
 from .token_utils import generate_confirmation_token
+from .logger import set_lambda_context, log_info, log_warning, log_error
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
@@ -45,14 +46,21 @@ def lambda_handler(event, context):
     Returns:
         dict: API Gateway response with CORS headers.
     """
+    set_lambda_context(context)
+    
     if event.get('httpMethod') == 'OPTIONS':
+        log_info('cors_preflight_request')
         return cors_response(200, {'message': 'OK'})
 
     try:
         body = json.loads(event.get('body', '{}'))
         email = body.get('email', '').strip().lower()
+        source = body.get('source', 'api')
+
+        log_info('subscription_request', email=email, source=source)
 
         if not email or not is_valid_email(email):
+            log_warning('invalid_email_format', email=email)
             monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
                 {'Name': 'Status', 'Value': 'InvalidEmail'}
             ])
@@ -70,6 +78,7 @@ def lambda_handler(event, context):
             topic_prefs = existing.get('TopicPreferences', [{}])[0]
 
             if topic_prefs.get('SubscriptionStatus') == 'OPT_IN':
+                log_info('already_subscribed', email=email)
                 monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
                     {'Name': 'Status', 'Value': 'AlreadySubscribed'}
                 ])
@@ -79,7 +88,7 @@ def lambda_handler(event, context):
                 })
 
         except ses_v2.exceptions.NotFoundException:
-            pass
+            log_info('new_subscription_request', email=email)
 
         # Generate confirmation token and send email
         api_url = get_api_url()
@@ -88,6 +97,7 @@ def lambda_handler(event, context):
 
         send_confirmation_email(email, confirm_url)
 
+        log_info('confirmation_email_sent', email=email)
         monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'ConfirmationSent'}
         ])
@@ -98,7 +108,10 @@ def lambda_handler(event, context):
         })
 
     except Exception as e:
-        print(f"Subscription error: {e}")
+        log_error('subscription_error',
+                  error_type=type(e).__name__,
+                  error_message=str(e),
+                  email=body.get('email', 'unknown') if 'body' in locals() else 'unknown')
         monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Error'}
         ])
@@ -215,10 +228,15 @@ Iridia Daily - Research Intelligence Daily
         monitoring.retry_with_backoff(send_email, max_attempts=2)
         monitoring.put_metric('ConfirmationEmailSent', 1)
 
-        print(f"Confirmation email sent to {email}")
+        log_info('confirmation_email_delivered', 
+                 email=email,
+                 confirmation_url_length=len(confirm_url))
 
     except Exception as e:
-        print(f"Confirmation email error: {e}")
+        log_error('confirmation_email_failed',
+                  email=email,
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         monitoring.put_metric('ConfirmationEmailFailed', 1)
         raise
 
