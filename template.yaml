@@ -7,6 +7,17 @@ Globals:
     Runtime: python3.12
     Timeout: 30
     MemorySize: 256
+  Api:
+    Name: IridiaDailyApi
+    Cors:
+      AllowOrigin: "'*'"
+      AllowMethods: "'POST, GET, OPTIONS'"
+      AllowHeaders: "'Content-Type'"
+    MethodSettings:
+      - ResourcePath: "/*"
+        HttpMethod: "*"
+        ThrottlingRateLimit: 20
+        ThrottlingBurstLimit: 40
 
 Parameters:
   SenderEmail:
@@ -37,24 +48,6 @@ Parameters:
 
 Resources:
   # ==========================================
-  # API GATEWAY (explicitly defined, lowercase stage)
-  # ==========================================
-  IridiaApi:
-    Type: AWS::Serverless::Api
-    Properties:
-      Name: IridiaDailyApi
-      StageName: !Ref StageName
-      Cors:
-        AllowOrigin: "'*'"
-        AllowMethods: "'POST, GET, OPTIONS'"
-        AllowHeaders: "'Content-Type'"
-      MethodSettings:
-        - ResourcePath: "/*"
-          HttpMethod: "*"
-          ThrottlingRateLimit: 20
-          ThrottlingBurstLimit: 40
-
-  # ==========================================
   # SECRETS MANAGEMENT - SECURE STORAGE
   # ==========================================
   HMACSecret:
@@ -82,6 +75,18 @@ Resources:
           DisplayName: Daily Research Newsletter
           Description: Daily scientific research insights
           DefaultSubscriptionStatus: OPT_IN
+
+  # ==========================================
+  # SES EMAIL TEMPLATE
+  # ==========================================
+  NewsletterEmailTemplate:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: IridiaDailyNewsletter
+        SubjectPart: '{{subject}}'
+        HtmlPart: '{{html_content}}'
+        TextPart: '{{text_content}}'
 
   # ==========================================
   # SNS TOPIC FOR ALERTS
@@ -162,12 +167,22 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref HMACSecret
 
+              # ==========================================
+              # CloudFormation (stack introspection)
+              # ==========================================
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
   # ==========================================
   # LAMBDA FUNCTIONS
   # ==========================================
   NewsletterFunction:
     Type: AWS::Serverless::Function
-    DependsOn: NewsletterContactList
+    DependsOn:
+      - NewsletterContactList
+      - NewsletterEmailTemplate
     Properties:
       FunctionName: iridia-daily-newsletter
       CodeUri: src/
@@ -182,7 +197,7 @@ Resources:
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+          API_URL: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         DailySchedule:
           Type: Schedule
@@ -204,12 +219,10 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
-            RestApiId: !Ref IridiaApi
             Path: /subscribe
             Method: post
 
@@ -226,12 +239,10 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
-            RestApiId: !Ref IridiaApi
             Path: /confirm
             Method: get
 
@@ -247,12 +258,10 @@ Resources:
         Variables:
           CONTACT_LIST_NAME: !Ref ContactListName
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_URL: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
-            RestApiId: !Ref IridiaApi
             Path: /unsubscribe
             Method: get
 
@@ -326,21 +335,23 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-HMACSecretArn"
 
+  ApiUrl:
+    Description: Base API URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+
   SubscribeEndpoint:
     Description: Subscription API endpoint
-    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/subscribe"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/subscribe"
 
   ConfirmEndpoint:
     Description: Confirmation API endpoint
-    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/confirm"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/confirm"
 
   UnsubscribeEndpoint:
     Description: Unsubscribe API endpoint
-    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
-
-  ApiUrl:
-    Description: Base API URL
-    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
 
   AlertTopicArn:
     Description: SNS Topic for Alerts

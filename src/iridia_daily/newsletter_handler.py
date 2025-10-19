@@ -9,7 +9,6 @@ import boto3
 import os
 import re
 from datetime import datetime
-from botocore.exceptions import ClientError
 
 from .clients import PubMedClient, BedrockClient
 from .email_generator import EmailGenerator
@@ -21,7 +20,6 @@ ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
 # Bulk send batch size (SES limit is 50)
 BULK_BATCH_SIZE = 50
-
 
 def get_api_url():
     """Get API Gateway URL from environment variable.
@@ -41,40 +39,6 @@ def get_api_url():
         )
     
     return api_url
-
-
-def ensure_email_template():
-    """Ensure the SES email template exists for bulk sending.
-
-    Creates a simple pass-through template if it doesn't exist.
-    Template uses {{html_content}}, {{text_content}}, and {{subject}}
-    placeholders.
-    """
-    template_name = 'IridiaDailyNewsletter'
-
-    try:
-        ses.get_template(TemplateName=template_name)
-        print(f"Template '{template_name}' already exists")
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'TemplateDoesNotExist':
-            print(f"Creating template '{template_name}'")
-            try:
-                ses.create_template(
-                    Template={
-                        'TemplateName': template_name,
-                        'SubjectPart': '{{subject}}',
-                        'HtmlPart': '{{html_content}}',
-                        'TextPart': '{{text_content}}'
-                    }
-                )
-                print(f"Template '{template_name}' created successfully")
-            except Exception as create_error:
-                print(f"Error creating template: {create_error}")
-                raise
-        else:
-            print(f"Error checking template: {e}")
-            raise
-
 
 def lambda_handler(event, context):
     """Generate and send daily newsletter with personalized links.
@@ -106,8 +70,6 @@ def lambda_handler(event, context):
             {'Name': 'Status', 'Value': 'SenderNotVerified'}
         ])
         return {'statusCode': 500, 'body': 'Sender email not verified'}
-
-    ensure_email_template()
 
     print("Fetching subscribers...")
     subscribers = get_subscribers(contact_list_name)
