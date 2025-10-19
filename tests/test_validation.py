@@ -1,7 +1,7 @@
 """Tests for summary validation and alerting functionality."""
 
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 
 class TestValidateSummaries:
@@ -70,7 +70,8 @@ class TestValidateSummaries:
 
         assert result is True
 
-    def test_validate_summaries_warns_short_summary(self, capfd):
+    @patch('iridia_daily.newsletter_handler.log_warning')
+    def test_validate_summaries_warns_short_summary(self, mock_log_warning):
         """Test validation warns but passes for short summaries."""
         from iridia_daily.newsletter_handler import validate_summaries
 
@@ -80,12 +81,17 @@ class TestValidateSummaries:
         result = validate_summaries(summaries, papers)
 
         assert result is True  # Still passes despite warning
-        captured = capfd.readouterr()
-        assert 'WARNING' in captured.out
-        assert 'too short' in captured.out.lower()
-        assert '9 characters' in captured.out
+        
+        # Verify warning was logged
+        mock_log_warning.assert_called_once()
+        call_args = mock_log_warning.call_args
+        assert call_args[0][0] == 'summary_too_short'
+        assert call_args[1]['summary_index'] == 1
+        assert call_args[1]['length'] == 9
+        assert call_args[1]['min_recommended'] == 50
 
-    def test_validate_summaries_warns_long_summary(self, capfd):
+    @patch('iridia_daily.newsletter_handler.log_warning')
+    def test_validate_summaries_warns_long_summary(self, mock_log_warning):
         """Test validation warns but passes for long summaries."""
         from iridia_daily.newsletter_handler import validate_summaries
 
@@ -97,12 +103,17 @@ class TestValidateSummaries:
         result = validate_summaries(summaries, papers)
 
         assert result is True  # Still passes despite warning
-        captured = capfd.readouterr()
-        assert 'WARNING' in captured.out
-        assert 'too long' in captured.out.lower()
-        assert '1001 characters' in captured.out
+        
+        # Verify warning was logged
+        mock_log_warning.assert_called_once()
+        call_args = mock_log_warning.call_args
+        assert call_args[0][0] == 'summary_too_long'
+        assert call_args[1]['summary_index'] == 1
+        assert call_args[1]['length'] == 1001
+        assert call_args[1]['max_recommended'] == 1000
 
-    def test_validate_summaries_multiple_quality_issues(self, capfd):
+    @patch('iridia_daily.newsletter_handler.log_warning')
+    def test_validate_summaries_multiple_quality_issues(self, mock_log_warning):
         """Test validation logs multiple quality warnings."""
         from iridia_daily.newsletter_handler import validate_summaries
 
@@ -120,10 +131,17 @@ class TestValidateSummaries:
         result = validate_summaries(summaries, papers)
 
         assert result is True  # Passes but with warnings
-        captured = capfd.readouterr()
-        assert captured.out.count('WARNING') == 2
+        
+        # Should have 2 warning calls (one for short, one for long)
+        assert mock_log_warning.call_count == 2
+        
+        # Check the warnings
+        calls = mock_log_warning.call_args_list
+        assert calls[0][0][0] == 'summary_too_short'
+        assert calls[1][0][0] == 'summary_too_long'
 
-    def test_validate_summaries_non_string_type(self, capfd):
+    @patch('iridia_daily.newsletter_handler.log_warning')
+    def test_validate_summaries_non_string_type(self, mock_log_warning):
         """Test validation warns for non-string summaries."""
         from iridia_daily.newsletter_handler import validate_summaries
 
@@ -139,9 +157,13 @@ class TestValidateSummaries:
         result = validate_summaries(summaries, papers)
 
         assert result is True  # Still passes
-        captured = capfd.readouterr()
-        assert 'WARNING' in captured.out
-        assert 'not a string type' in captured.out.lower()
+        
+        # Verify warning was logged
+        mock_log_warning.assert_called_once()
+        call_args = mock_log_warning.call_args
+        assert call_args[0][0] == 'summary_not_string'
+        assert call_args[1]['summary_index'] == 2
+        assert call_args[1]['summary_type'] == 'int'
 
     def test_validate_summaries_edge_case_exactly_50_chars(self):
         """Test summary with exactly 50 characters passes without warning."""
@@ -170,7 +192,9 @@ class TestSendAlertNotification:
     """Test SNS alert notification functionality."""
 
     @patch('iridia_daily.newsletter_handler.boto3')
-    def test_send_alert_notification_success(self, mock_boto3, monkeypatch):
+    @patch('iridia_daily.newsletter_handler.log_info')
+    def test_send_alert_notification_success(self, mock_log_info, 
+                                            mock_boto3, monkeypatch):
         """Test successful SNS alert sending."""
         from iridia_daily.newsletter_handler import send_alert_notification
 
@@ -197,10 +221,14 @@ class TestSendAlertNotification:
         assert call_kwargs['Message'] == 'Test alert message'
         assert call_kwargs['Subject'] == 'Test Subject'
         assert 'arn:aws:sns' in call_kwargs['TopicArn']
+        
+        # Verify success was logged
+        mock_log_info.assert_called_once()
+        assert mock_log_info.call_args[0][0] == 'alert_sent'
 
-    @patch('iridia_daily.newsletter_handler.boto3')
+    @patch('iridia_daily.newsletter_handler.log_warning')
     def test_send_alert_notification_missing_arn(
-        self, mock_boto3, monkeypatch, capfd
+        self, mock_log_warning, monkeypatch
     ):
         """Test alert skipped when ALERT_TOPIC_ARN not configured."""
         from iridia_daily.newsletter_handler import send_alert_notification
@@ -209,14 +237,14 @@ class TestSendAlertNotification:
 
         send_alert_notification('Test message')
 
-        mock_boto3.client.assert_not_called()
-        captured = capfd.readouterr()
-        assert 'WARNING' in captured.out
-        assert 'ALERT_TOPIC_ARN not configured' in captured.out
+        # Verify warning was logged
+        mock_log_warning.assert_called_once()
+        assert mock_log_warning.call_args[0][0] == 'alert_topic_not_configured'
 
     @patch('iridia_daily.newsletter_handler.boto3')
+    @patch('iridia_daily.newsletter_handler.log_error')
     def test_send_alert_notification_sns_error(
-        self, mock_boto3, monkeypatch, capfd
+        self, mock_log_error, mock_boto3, monkeypatch
     ):
         """Test alert handles SNS publish errors gracefully."""
         from iridia_daily.newsletter_handler import send_alert_notification
@@ -233,9 +261,11 @@ class TestSendAlertNotification:
         # Should not raise exception
         send_alert_notification('Test message')
 
-        captured = capfd.readouterr()
-        assert 'ERROR' in captured.out
-        assert 'Failed to send SNS alert' in captured.out
+        # Verify error was logged
+        mock_log_error.assert_called_once()
+        call_args = mock_log_error.call_args
+        assert call_args[0][0] == 'alert_send_failed'
+        assert 'SNS API Error' in call_args[1]['error_message']
 
     @patch('iridia_daily.newsletter_handler.boto3')
     def test_send_alert_notification_default_subject(

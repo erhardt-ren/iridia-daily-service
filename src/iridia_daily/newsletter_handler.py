@@ -14,6 +14,7 @@ from .clients import PubMedClient, BedrockClient
 from .email_generator import EmailGenerator
 from . import monitoring
 from .token_utils import generate_unsubscribe_token
+from .logger import set_lambda_context, log_info, log_warning, log_error, log_metric
 
 ses = boto3.client('ses', region_name='us-east-1')
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
@@ -50,7 +51,8 @@ def lambda_handler(event, context):
     Returns:
         dict: Response with status code, body, and delivery statistics.
     """
-    print("Starting newsletter generation")
+    set_lambda_context(context)
+    log_info('newsletter_handler_started')
     start_time = datetime.now()
 
     contact_list_name = os.environ.get('CONTACT_LIST_NAME')
@@ -58,60 +60,62 @@ def lambda_handler(event, context):
     api_url = os.environ.get('API_URL', '')
 
     if not contact_list_name or not sender_email:
-        print("ERROR: Missing required environment variables")
+        log_error('config_error', 
+                  missing_vars='CONTACT_LIST_NAME or SENDER_EMAIL')
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'ConfigError'}
         ])
         return {'statusCode': 500, 'body': 'Configuration error'}
 
     if not monitoring.verify_ses_sender(sender_email):
-        print(f"ERROR: Sender email not verified: {sender_email}")
+        log_error('sender_not_verified', sender_email=sender_email)
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'SenderNotVerified'}
         ])
         return {'statusCode': 500, 'body': 'Sender email not verified'}
 
-    print("Fetching subscribers...")
+    log_info('fetching_subscribers')
     subscribers = get_subscribers(contact_list_name)
 
     if not subscribers:
-        print("No active subscribers found")
+        log_warning('no_subscribers_found')
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'NoSubscribers'}
         ])
         return {'statusCode': 200, 'body': 'No subscribers'}
 
-    print(f"Found {len(subscribers)} subscribers")
+    log_info('subscribers_retrieved', count=len(subscribers))
     monitoring.put_metric('SubscriberCount', len(subscribers))
 
     valid_subscribers = [email for email in subscribers if is_valid_email(email)]
     if len(valid_subscribers) != len(subscribers):
         invalid_count = len(subscribers) - len(valid_subscribers)
-        print(f"Filtered out {invalid_count} invalid email addresses")
+        log_warning('invalid_emails_filtered', 
+                    invalid_count=invalid_count)
         monitoring.put_metric('InvalidSubscriberEmails', invalid_count)
 
     if not valid_subscribers:
-        print("No valid subscriber emails found")
+        log_error('no_valid_subscribers')
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'NoValidSubscribers'}
         ])
         return {'statusCode': 500, 'body': 'No valid subscribers'}
 
-    print("Fetching research papers...")
+    log_info('fetching_papers')
     pubmed = PubMedClient()
     papers = pubmed.get_recent_papers(num_papers=5)
 
     if not papers:
-        print("No papers found")
+        log_error('no_papers_found')
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'NoPapers'}
         ])
         return {'statusCode': 500, 'body': 'No papers found'}
 
-    print(f"Retrieved {len(papers)} papers")
+    log_info('papers_retrieved', count=len(papers))
     monitoring.put_metric('PapersRetrieved', len(papers))
 
-    print("Generating summaries...")
+    log_info('generating_summaries')
     bedrock = BedrockClient()
     summaries = bedrock.generate_summaries(papers)
 
@@ -126,7 +130,10 @@ def lambda_handler(event, context):
             f"content to subscribers."
         )
         
-        print(f"ERROR: {error_msg}")
+        log_error('summary_validation_failed',
+                  expected_count=len(papers),
+                  received_count=len(summaries),
+                  error_message=error_msg)
         
         # Publish CloudWatch metric for monitoring and alerting
         monitoring.put_metric('SummaryGenerationFailed', 1, dimensions=[
@@ -158,12 +165,12 @@ def lambda_handler(event, context):
             })
         }
 
-    print(f"Summary validation passed: {len(summaries)} summaries generated")
+    log_info('summary_validation_passed', count=len(summaries))
 
     while len(summaries) < len(papers):
         summaries.append("Breakthrough research published.")
 
-    print(f"Sending bulk newsletters to {len(valid_subscribers)} subscribers...")
+    log_info('sending_bulk_newsletters', subscriber_count=len(valid_subscribers))
     email_gen = EmailGenerator()
 
     try:
@@ -183,12 +190,24 @@ def lambda_handler(event, context):
 
         duration = (datetime.now() - start_time).total_seconds()
 
-        print(f"Newsletter sent to {result['delivered']} subscribers")
+        log_info('newsletter_sent',
+                 delivered=result['delivered'],
+                 failed=result['failed'],
+                 duration_seconds=round(duration, 2))
+        
+        log_metric('newsletter_duration',
+                   value=duration,
+                   unit='Seconds',
+                   papers=len(papers),
+                   subscribers=result['delivered'])
+        
         monitoring.put_metric('NewsletterDelivered', result['delivered'])
         monitoring.put_metric('NewsletterGenerationTime', duration, unit='Seconds')
 
         if result['failed'] > 0:
-            print(f"Failed to deliver to {result['failed']} subscribers")
+            log_warning('delivery_failures',
+                        failed_count=result['failed'],
+                        sample_emails=result['failed_emails'][:5])
             monitoring.put_metric('NewsletterFailed', result['failed'])
 
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
@@ -206,7 +225,9 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
-        print(f"Error sending newsletter: {e}")
+        log_error('newsletter_send_error',
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Error'}
         ])
@@ -245,7 +266,9 @@ def get_subscribers(contact_list_name):
         return subscribers
 
     except Exception as e:
-        print(f"Error retrieving subscribers: {e}")
+        log_error('subscriber_retrieval_error',
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         return []
 
 
@@ -284,8 +307,10 @@ def send_bulk_newsletters(subscribers, sender_email, subject, papers,
         batch = subscribers[batch_num:batch_num + BULK_BATCH_SIZE]
         current_batch = (batch_num // BULK_BATCH_SIZE) + 1
 
-        print(f"Processing batch {current_batch}/{total_batches} "
-              f"({len(batch)} subscribers)")
+        log_info('processing_batch',
+                 batch_number=current_batch,
+                 total_batches=total_batches,
+                 batch_size=len(batch))
 
         bulk_entries = []
 
@@ -318,12 +343,15 @@ def send_bulk_newsletters(subscribers, sender_email, subject, papers,
                 })
 
             except Exception as e:
-                print(f"Error preparing email for {email}: {e}")
+                log_error('email_preparation_error',
+                          email=email,
+                          error_type=type(e).__name__,
+                          error_message=str(e))
                 failed += 1
                 failed_emails.append(email)
 
         if not bulk_entries:
-            print(f"Batch {current_batch}: No valid entries to send")
+            log_warning('batch_empty', batch_number=current_batch)
             continue
 
         try:
@@ -342,28 +370,43 @@ def send_bulk_newsletters(subscribers, sender_email, subject, papers,
                 BulkEmailEntries=bulk_entries
             )
 
+            batch_delivered = 0
+            batch_failed = 0
+            
             for idx, result in enumerate(response.get('BulkEmailEntryResults', [])):
                 email = batch[idx] if idx < len(batch) else 'unknown'
 
                 if result.get('Status') == 'SUCCESS':
                     delivered += 1
+                    batch_delivered += 1
                 else:
                     failed += 1
+                    batch_failed += 1
                     failed_emails.append(email)
                     error_msg = result.get('Error', 'Unknown error')
-                    print(f"Failed to send to {email}: {error_msg}")
+                    log_warning('email_delivery_failed',
+                                email=email,
+                                error=error_msg)
 
-            print(f"Batch {current_batch} complete: "
-                  f"{delivered} delivered, {failed} failed so far")
+            log_info('batch_complete',
+                     batch_number=current_batch,
+                     delivered=batch_delivered,
+                     failed=batch_failed,
+                     total_delivered=delivered,
+                     total_failed=failed)
 
         except Exception as e:
-            print(f"Bulk send failed for batch {current_batch}: {e}")
+            log_error('bulk_send_error',
+                      batch_number=current_batch,
+                      error_type=type(e).__name__,
+                      error_message=str(e))
             failed += len(batch)
             failed_emails.extend(batch)
 
     if failed > 0:
-        print(f"Total delivery failures: {failed}")
-        print(f"Sample failed emails: {', '.join(failed_emails[:10])}")
+        log_warning('total_delivery_failures',
+                    failed_count=failed,
+                    sample_failed_emails=failed_emails[:10])
 
     return {
         'delivered': delivered,
@@ -418,33 +461,34 @@ def validate_summaries(summaries, papers):
     """
     # Critical validation: count must match exactly
     if len(summaries) != len(papers):
-        print(
-            f"ERROR: Summary count mismatch - Expected {len(papers)} "
-            f"summaries but received {len(summaries)}"
-        )
+        log_error('summary_count_mismatch',
+                  expected=len(papers),
+                  received=len(summaries))
         return False
     
     # Quality checks: log warnings but don't fail
     for i, summary in enumerate(summaries):
         if not isinstance(summary, str):
-            print(f"WARNING: Summary {i + 1} is not a string type")
+            log_warning('summary_not_string',
+                        summary_index=i + 1,
+                        summary_type=type(summary).__name__)
             continue
             
         summary_len = len(summary)
         
         if summary_len < 50:
-            print(
-                f"WARNING: Summary {i + 1} is too short ({summary_len} "
-                f"characters). Minimum recommended: 50 characters. "
-                f"Preview: {summary[:30]}..."
-            )
+            log_warning('summary_too_short',
+                        summary_index=i + 1,
+                        length=summary_len,
+                        min_recommended=50,
+                        preview=summary[:30])
         
         if summary_len > 1000:
-            print(
-                f"WARNING: Summary {i + 1} is too long ({summary_len} "
-                f"characters). Maximum recommended: 1000 characters. "
-                f"Preview: {summary[:50]}..."
-            )
+            log_warning('summary_too_long',
+                        summary_index=i + 1,
+                        length=summary_len,
+                        max_recommended=1000,
+                        preview=summary[:50])
     
     return True
 
@@ -463,7 +507,7 @@ def send_alert_notification(message, subject="Iridia Daily Alert"):
     alert_topic_arn = os.environ.get('ALERT_TOPIC_ARN')
     
     if not alert_topic_arn:
-        print("WARNING: ALERT_TOPIC_ARN not configured, skipping SNS alert")
+        log_warning('alert_topic_not_configured')
         return
     
     try:
@@ -473,6 +517,8 @@ def send_alert_notification(message, subject="Iridia Daily Alert"):
             Message=message,
             Subject=subject
         )
-        print(f"Alert notification sent to SNS topic: {alert_topic_arn}")
+        log_info('alert_sent', topic_arn=alert_topic_arn)
     except Exception as e:
-        print(f"ERROR: Failed to send SNS alert: {e}")
+        log_error('alert_send_failed',
+                  error_type=type(e).__name__,
+                  error_message=str(e))

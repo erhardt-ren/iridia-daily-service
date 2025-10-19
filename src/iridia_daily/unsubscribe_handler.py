@@ -10,6 +10,7 @@ import os
 
 from . import monitoring
 from .token_utils import verify_unsubscribe_token
+from .logger import set_lambda_context, log_info, log_warning, log_error
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
@@ -24,10 +25,15 @@ def lambda_handler(event, context):
     Returns:
         dict: HTML response with status.
     """
+    set_lambda_context(context)
+    
     params = event.get('queryStringParameters', {}) or {}
     token = params.get('token', '').strip()
 
+    log_info('unsubscribe_request', has_token=bool(token))
+
     if not token:
+        log_warning('unsubscribe_missing_token')
         monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'InvalidRequest'}
         ])
@@ -40,6 +46,7 @@ def lambda_handler(event, context):
     email = verify_unsubscribe_token(token)
 
     if not email:
+        log_warning('unsubscribe_invalid_token', token_length=len(token))
         monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'InvalidToken'}
         ])
@@ -50,6 +57,8 @@ def lambda_handler(event, context):
                            '<p>Please use the unsubscribe link from your most '
                            'recent newsletter email.</p>')
 
+    log_info('unsubscribe_token_verified', email=email)
+    
     contact_list_name = os.environ.get('CONTACT_LIST_NAME')
 
     try:
@@ -65,6 +74,7 @@ def lambda_handler(event, context):
             topic_prefs = contact.get('TopicPreferences', [{}])[0]
 
             if topic_prefs.get('SubscriptionStatus') == 'OPT_OUT':
+                log_info('already_unsubscribed', email=email)
                 monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
                     {'Name': 'Status', 'Value': 'AlreadyUnsubscribed'}
                 ])
@@ -85,7 +95,7 @@ def lambda_handler(event, context):
 
             monitoring.retry_with_backoff(update_contact, max_attempts=3)
 
-            print(f"Unsubscribed: {email}")
+            log_info('unsubscribe_success', email=email)
             monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
                 {'Name': 'Status', 'Value': 'Success'}
             ])
@@ -104,6 +114,7 @@ def lambda_handler(event, context):
                                '</p></div>')
 
         except ses_v2.exceptions.NotFoundException:
+            log_warning('unsubscribe_not_found', email=email)
             monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
                 {'Name': 'Status', 'Value': 'NotFound'}
             ])
@@ -113,7 +124,10 @@ def lambda_handler(event, context):
                                'this email address.</p>')
 
     except Exception as e:
-        print(f"Unsubscribe error: {e}")
+        log_error('unsubscribe_error',
+                  email=email,
+                  error_type=type(e).__name__,
+                  error_message=str(e))
         monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Error'}
         ])
