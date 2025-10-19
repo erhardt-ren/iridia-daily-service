@@ -15,32 +15,22 @@ from .token_utils import generate_confirmation_token
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
 
-def get_api_url(event):
-    """Get API Gateway URL from environment or extract from event.
-    
-    Args:
-        event: API Gateway Lambda proxy event.
-        
+def get_api_url():
+    """Get API Gateway URL from environment variable.
+
     Returns:
         str: Base API URL.
+
+    Raises:
+        ValueError: If API_URL environment variable is not set.
     """
-    # First try environment variable
-    api_url = os.environ.get('API_URL', '')
+    api_url = os.environ.get('API_URL', '').strip()
     
-    # If it's the placeholder or empty, extract from event
-    if not api_url or api_url == 'PLACEHOLDER':
-        request_context = event.get('requestContext', {})
-        domain_name = request_context.get('domainName', '')
-        stage = request_context.get('stage', 'Prod')
-        
-        if domain_name:
-            return f"https://{domain_name}/{stage}"
-        
-        # Construct from region and API ID
-        region = os.environ.get('AWS_REGION', 'us-east-1')
-        api_id = request_context.get('apiId', '')
-        if api_id:
-            return f"https://{api_id}.execute-api.{region}.amazonaws.com/{stage}"
+    if not api_url:
+        raise ValueError(
+            "API_URL environment variable is not set. "
+            "Ensure template.yaml includes API_URL in Environment Variables."
+        )
     
     return api_url
 
@@ -92,7 +82,7 @@ def lambda_handler(event, context):
             pass
 
         # Generate confirmation token and send email
-        api_url = get_api_url(event)
+        api_url = get_api_url()
         token = generate_confirmation_token(email, expiry_hours=24)
         confirm_url = f"{api_url}/confirm?token={token}"
 

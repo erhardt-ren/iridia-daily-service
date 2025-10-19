@@ -24,29 +24,21 @@ BULK_BATCH_SIZE = 50
 
 
 def get_api_url():
-    """Get API Gateway URL from environment or discover it.
+    """Get API Gateway URL from environment variable.
 
     Returns:
-        str: Base API URL or empty string if not found.
+        str: Base API URL.
+
+    Raises:
+        ValueError: If API_URL environment variable is not set.
     """
-    api_url = os.environ.get('API_URL', '')
+    api_url = os.environ.get('API_URL', '').strip()
     
-    if not api_url or api_url == 'PLACEHOLDER':
-        region = os.environ.get('AWS_REGION', 'us-east-1')
-        
-        try:
-            cfn = boto3.client('cloudformation', region_name=region)
-            stacks = cfn.describe_stacks()
-            for stack in stacks.get('Stacks', []):
-                stack_name = stack.get('StackName', '')
-                if 'iridia' in stack_name.lower():
-                    for output in stack.get('Outputs', []):
-                        if output.get('OutputKey') == 'ApiUrl':
-                            return output.get('OutputValue', '')
-        except Exception as e:
-            print(f"Could not discover API URL: {e}")
-        
-        return ""
+    if not api_url:
+        raise ValueError(
+            "API_URL environment variable is not set. "
+            "Ensure template.yaml includes API_URL in Environment Variables."
+        )
     
     return api_url
 

@@ -7,67 +7,46 @@ from botocore.exceptions import ClientError
 
 
 class TestGetApiUrl:
-    """Test API Gateway URL discovery."""
+    """Test API URL retrieval from environment."""
 
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_discovers_api_gateway(self, mock_boto3, monkeypatch):
-        """Test API Gateway discovery via CloudFormation API."""
+    def test_get_api_url_from_environment(self, monkeypatch):
+        """Test API URL retrieval from environment variable."""
         from iridia_daily.newsletter_handler import get_api_url
 
-        monkeypatch.setenv('AWS_REGION', 'us-east-1')
-        monkeypatch.delenv('API_URL', raising=False)
-
-        mock_cfn = Mock()
-        mock_cfn.describe_stacks.return_value = {
-            'Stacks': [
-                {
-                    'StackName': 'iridia-daily-stack',
-                    'Outputs': [
-                        {
-                            'OutputKey': 'ApiUrl',
-                            'OutputValue': 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
-                        }
-                    ]
-                }
-            ]
-        }
-
-        mock_boto3.client.return_value = mock_cfn
-
-        url = get_api_url()
-
-        expected = 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
-        assert url == expected
-        mock_cfn.describe_stacks.assert_called_once()
-
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_uses_environment_variable(self, mock_boto3, monkeypatch):
-        """Test that environment variable takes precedence."""
-        from iridia_daily.newsletter_handler import get_api_url
-
-        expected_url = 'https://myapi.example.com/prod'
+        expected_url = 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
         monkeypatch.setenv('API_URL', expected_url)
 
         url = get_api_url()
 
         assert url == expected_url
-        mock_boto3.client.assert_not_called()
 
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_handles_discovery_failure(self, mock_boto3, monkeypatch):
-        """Test graceful handling of discovery failure."""
+    def test_get_api_url_missing_raises_error(self, monkeypatch):
+        """Test that missing API_URL raises ValueError."""
         from iridia_daily.newsletter_handler import get_api_url
 
-        monkeypatch.setenv('AWS_REGION', 'us-east-1')
         monkeypatch.delenv('API_URL', raising=False)
 
-        mock_cfn = Mock()
-        mock_cfn.describe_stacks.return_value = {'Stacks': []}
-        mock_boto3.client.return_value = mock_cfn
+        with pytest.raises(ValueError, match="API_URL environment variable is not set"):
+            get_api_url()
+
+    def test_get_api_url_strips_whitespace(self, monkeypatch):
+        """Test that API URL is stripped of whitespace."""
+        from iridia_daily.newsletter_handler import get_api_url
+
+        monkeypatch.setenv('API_URL', '  https://api.example.com/prod  ')
 
         url = get_api_url()
 
-        assert url == ""
+        assert url == 'https://api.example.com/prod'
+
+    def test_get_api_url_empty_string_raises_error(self, monkeypatch):
+        """Test that empty API_URL raises ValueError."""
+        from iridia_daily.newsletter_handler import get_api_url
+
+        monkeypatch.setenv('API_URL', '   ')
+
+        with pytest.raises(ValueError, match="API_URL environment variable is not set"):
+            get_api_url()
 
 
 class TestEnsureEmailTemplate:
@@ -113,70 +92,6 @@ class TestEnsureEmailTemplate:
         assert '{{subject}}' in template['SubjectPart']
         assert '{{html_content}}' in template['HtmlPart']
         assert '{{text_content}}' in template['TextPart']
-
-
-class TestGetApiUrl:
-    """Test API Gateway URL discovery."""
-
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_discovers_api_gateway(self, mock_boto3, monkeypatch):
-        """Test API Gateway discovery via CloudFormation API."""
-        from iridia_daily.newsletter_handler import get_api_url
-
-        monkeypatch.setenv('AWS_REGION', 'us-east-1')
-        monkeypatch.delenv('API_URL', raising=False)
-
-        mock_cfn = Mock()
-        mock_cfn.describe_stacks.return_value = {
-            'Stacks': [
-                {
-                    'StackName': 'iridia-daily-stack',
-                    'Outputs': [
-                        {
-                            'OutputKey': 'ApiUrl',
-                            'OutputValue': 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        mock_boto3.client.return_value = mock_cfn
-
-        url = get_api_url()
-
-        expected = 'https://abc123xyz.execute-api.us-east-1.amazonaws.com/prod'
-        assert url == expected
-        mock_cfn.describe_stacks.assert_called_once()
-
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_uses_environment_variable(self, mock_boto3, monkeypatch):
-        """Test that environment variable takes precedence."""
-        from iridia_daily.newsletter_handler import get_api_url
-
-        expected_url = 'https://myapi.example.com/prod'
-        monkeypatch.setenv('API_URL', expected_url)
-
-        url = get_api_url()
-
-        assert url == expected_url
-        mock_boto3.client.assert_not_called()
-
-    @patch('iridia_daily.newsletter_handler.boto3')
-    def test_handles_discovery_failure(self, mock_boto3, monkeypatch):
-        """Test graceful handling of discovery failure."""
-        from iridia_daily.newsletter_handler import get_api_url
-
-        monkeypatch.setenv('AWS_REGION', 'us-east-1')
-        monkeypatch.delenv('API_URL', raising=False)
-
-        mock_cfn = Mock()
-        mock_cfn.describe_stacks.return_value = {'Stacks': []}
-        mock_boto3.client.return_value = mock_cfn
-
-        url = get_api_url()
-
-        assert url == ""
 
 
 @pytest.mark.integration
