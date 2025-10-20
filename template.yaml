@@ -265,6 +265,27 @@ Resources:
             Path: /unsubscribe
             Method: get
 
+  HealthCheckFunction:
+      Type: AWS::Serverless::Function
+      Properties:
+        FunctionName: iridia-daily-health
+        CodeUri: src/
+        Handler: iridia_daily.health_handler.lambda_handler
+        Timeout: 30
+        MemorySize: 256
+        Role: !GetAtt LambdaExecutionRole.Arn
+        Environment:
+          Variables:
+            SENDER_EMAIL: !Ref SenderEmail
+            HMAC_SECRET_ARN: !Ref HMACSecret
+        Events:
+          HealthEndpoint:
+            Type: Api
+            Properties:
+              Path: /health
+              Method: get
+              RestApiId: !Ref ServerlessRestApi
+
   # ==========================================
   # CLOUDWATCH ALARMS
   # ==========================================
@@ -352,6 +373,12 @@ Outputs:
   UnsubscribeEndpoint:
     Description: Unsubscribe API endpoint
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
+
+  HealthCheckEndpoint:
+      Description: Health check endpoint URL for manual or external monitoring
+      Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/health"
+      Export:
+        Name: !Sub "${AWS::StackName}-HealthCheckEndpoint"
 
   AlertTopicArn:
     Description: SNS Topic for Alerts

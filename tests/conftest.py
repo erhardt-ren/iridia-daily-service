@@ -26,10 +26,16 @@ def setup_env(monkeypatch):
 def mock_logger(request, monkeypatch):
     """Mock logger functions to prevent JSON output during tests.
     
-    Skips mocking for test_logger.py to allow testing the actual logger.
+    Skips mocking for test_logger.py and test_health_handler.py to allow 
+    testing the actual logger.
     """
     # Skip mocking if we're in the logger test file
     if 'test_logger' in request.node.nodeid:
+        yield
+        return
+    
+    # Skip mocking if we're in the health_handler test file
+    if 'test_health_handler' in request.node.nodeid:
         yield
         return
     
