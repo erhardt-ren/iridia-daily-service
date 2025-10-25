@@ -5,13 +5,14 @@ scientific research insights using AWS Lambda, SES, and Bedrock with secure
 double opt-in confirmation and personalized unsubscribe tokens.
 """
 
-__version__ = '2.0.0'
+__version__ = '1.0.0'
 __author__ = 'Iridia Daily Team'
 
 from . import newsletter_handler
 from . import subscribe_handler
 from . import unsubscribe_handler
 from . import confirm_handler
+from . import preferences_handler
 from . import email_generator
 from . import monitoring
 from . import utils
@@ -24,6 +25,7 @@ __all__ = [
     'subscribe_handler',
     'unsubscribe_handler',
     'confirm_handler',
+    'preferences_handler',
     'email_generator',
     'monitoring',
     'utils',

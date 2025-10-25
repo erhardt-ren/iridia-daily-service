@@ -3,18 +3,33 @@
 import json
 import boto3
 
+
 class BedrockClient:
+    """Client for generating content using AWS Bedrock and Claude."""
+
     def __init__(self, region='us-east-1'):
+        """Initialize Bedrock client.
+        
+        Args:
+            region: AWS region for Bedrock service.
+        """
         self.client = boto3.client('bedrock-runtime', region_name=region)
         self.model_id = 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'
     
     def generate_summaries(self, papers):
-        """Generate entertaining summaries for research papers."""
+        """Generate entertaining summaries for research papers.
+        
+        Args:
+            papers: List of paper dictionaries with title, abstract, etc.
+            
+        Returns:
+            List of summary strings, one per paper.
+        """
         prompt = self._build_prompt(papers)
         
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,
+            "max_tokens": 600,  # Reduced to encourage shorter summaries
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.9
         })
@@ -35,7 +50,14 @@ class BedrockClient:
             return ["Cool science fact coming soon!" for _ in papers] if papers else []
     
     def _build_prompt(self, papers):
-        """Build the prompt for Claude based on papers."""
+        """Build the prompt for Claude based on papers.
+        
+        Args:
+            papers: List of paper dictionaries.
+            
+        Returns:
+            Formatted prompt string for Claude.
+        """
         if not papers:
             return """Generate 3 fascinating, verified scientific facts from recent research. 
 Make each one punchy, entertaining, and memorable. Format as a numbered list."""
@@ -51,7 +73,7 @@ Here are {len(papers)} recently published research papers:
 
 {papers_text}
 
-Create SHORT, WITTY summaries for EACH paper (2-5 sentences each).
+Create SHORT, WITTY summaries for EACH paper (2-3 sentences, MAX 280 characters each).
 
 CRITICAL RULES:
 - Assume the role of a slightly feminine but scientific tone
@@ -61,21 +83,29 @@ CRITICAL RULES:
 - Make people smile while learning something real
 - Be conversational but intelligent - coffee shop, not lecture hall
 - Focus on the "aha" moment that makes the finding interesting
+- KEEP IT CONCISE: 2-3 sentences maximum, under 280 characters per summary
 
 Format EXACTLY like this:
 
 Paper 1:
-[Your smart, witty 2-5 sentence summary]
+[Your smart, witty 2-3 sentence summary - MAX 280 characters]
 
 Paper 2:
-[Your smart, witty 2-5 sentence summary]
+[Your smart, witty 2-3 sentence summary - MAX 280 characters]
 
 [Continue for all papers...]
 
 Wit should come from clever insights about the science itself, not from trying to be funny."""
     
     def _parse_summaries(self, summaries_text):
-        """Parse Claude's response into individual summaries."""
+        """Parse Claude's response into individual summaries.
+        
+        Args:
+            summaries_text: Raw text response from Claude.
+            
+        Returns:
+            List of individual summary strings.
+        """
         summaries = []
         lines = summaries_text.split('\n')
         current_summary = ""

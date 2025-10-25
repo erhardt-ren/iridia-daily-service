@@ -1,51 +1,52 @@
 """Subscription request handler with double opt-in confirmation.
 
-Handles subscription requests by sending confirmation emails with
-secure tokens instead of immediately adding contacts to the list.
+UPDATED: Uses SES TopicPreferences to store user topic selections.
 """
 
 import json
 import boto3
 import os
 import re
+import base64
+from datetime import datetime, timezone
 
 from . import monitoring
-from .token_utils import generate_confirmation_token
+from .token_utils import generate_confirmation_token  # ← ONLY THIS IMPORT
 from .logger import set_lambda_context, log_info, log_warning, log_error
+from .config import CATEGORY_MAPPING
+from .utils import get_api_url_from_event
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
 
-def get_api_url():
-    """Get API Gateway URL from environment variable.
-
-    Returns:
-        str: Base API URL.
-
-    Raises:
-        ValueError: If API_URL environment variable is not set.
-    """
-    api_url = os.environ.get('API_URL', '').strip()
+def validate_topics(topics):
+    """Validate topic preferences against configured categories."""
+    if not isinstance(topics, list):
+        return False, [], "Topics must be a list"
     
-    if not api_url:
-        raise ValueError(
-            "API_URL environment variable is not set. "
-            "Ensure template.yaml includes API_URL in Environment Variables."
-        )
+    valid_topics = {key for key in CATEGORY_MAPPING.keys() if key != 'default'}
     
-    return api_url
+    validated = []
+    for topic in topics:
+        if not isinstance(topic, str):
+            return False, [], f"Invalid topic type: {type(topic).__name__}"
+        
+        topic_lower = topic.lower().strip()
+        if topic_lower not in valid_topics:
+            return False, [], f"Invalid topic: {topic}. Valid topics: {', '.join(sorted(valid_topics))}"
+        
+        validated.append(topic_lower)
+    
+    validated = list(dict.fromkeys(validated))
+    
+    if not validated:
+        return False, [], "At least one topic must be selected"
+    
+    return True, validated, None
 
 
 def lambda_handler(event, context):
-    """Handle subscription requests with double opt-in.
-
-    Args:
-        event: API Gateway event.
-        context: Lambda context.
-
-    Returns:
-        dict: API Gateway response with CORS headers.
-    """
+    """Handle subscription requests with topic preferences stored in SES TopicPreferences."""
     set_lambda_context(context)
     
     if event.get('httpMethod') == 'OPTIONS':
@@ -55,9 +56,14 @@ def lambda_handler(event, context):
     try:
         body = json.loads(event.get('body', '{}'))
         email = body.get('email', '').strip().lower()
+        topics = body.get('topics')
         source = body.get('source', 'api')
 
-        log_info('subscription_request', email=email, source=source)
+        log_info('subscription_request', 
+                 email=email, 
+                 source=source,
+                 topics_provided=topics is not None,
+                 topic_count=len(topics) if topics else 0)
 
         if not email or not is_valid_email(email):
             log_warning('invalid_email_format', email=email)
@@ -65,6 +71,19 @@ def lambda_handler(event, context):
                 {'Name': 'Status', 'Value': 'InvalidEmail'}
             ])
             return cors_response(400, {'error': 'Invalid email address'})
+
+        if topics is not None:
+            is_valid, validated_topics, error_msg = validate_topics(topics)
+            if not is_valid:
+                log_warning('invalid_topics', email=email, topics=topics, error=error_msg)
+                monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
+                    {'Name': 'Status', 'Value': 'InvalidTopics'}
+                ])
+                return cors_response(400, {'error': error_msg})
+            topics = validated_topics
+            log_info('topics_validated', email=email, topics=topics, count=len(topics))
+        else:
+            log_info('no_topics_specified', email=email, action='subscribing_to_all')
 
         contact_list_name = os.environ.get('CONTACT_LIST_NAME')
 
@@ -75,219 +94,150 @@ def lambda_handler(event, context):
                 EmailAddress=email
             )
 
-            topic_prefs = existing.get('TopicPreferences', [{}])[0]
+            topic_prefs = existing.get('TopicPreferences', [])
+            
+            # Check if ANY topic is opted in
+            is_subscribed = any(
+                tp.get('SubscriptionStatus') == 'OPT_IN' 
+                for tp in topic_prefs
+            )
 
-            if topic_prefs.get('SubscriptionStatus') == 'OPT_IN':
+            if is_subscribed:
                 log_info('already_subscribed', email=email)
                 monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
                     {'Name': 'Status', 'Value': 'AlreadySubscribed'}
                 ])
                 return cors_response(200, {
-                    'message': 'You are already subscribed!',
-                    'email': email
+                    'message': 'You are already subscribed! Check your email for daily research insights.'
                 })
 
         except ses_v2.exceptions.NotFoundException:
-            log_info('new_subscription_request', email=email)
+            pass
 
-        # Generate confirmation token and send email
-        api_url = get_api_url()
-        token = generate_confirmation_token(email, expiry_hours=24)
-        confirm_url = f"{api_url}/confirm?token={token}"
+        # Generate confirmation token
+        token = generate_confirmation_token(email)
+        api_url = get_api_url_from_event(event)
+        
+        # Encode topics in URL
+        topics_param = ''
+        if topics:
+            topics_json = json.dumps(topics)
+            topics_b64 = base64.urlsafe_b64encode(topics_json.encode()).decode()
+            topics_param = f"&topics={topics_b64}"
+        
+        confirmation_url = f"{api_url}/confirm?token={token}{topics_param}"
 
-        send_confirmation_email(email, confirm_url)
+        send_confirmation_email(email, confirmation_url)
 
-        log_info('confirmation_email_sent', email=email)
+        log_info('confirmation_email_sent', email=email, has_topics=topics is not None)
         monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'ConfirmationSent'}
         ])
 
+        if topics:
+            for topic in topics:
+                monitoring.put_metric('TopicSelection', 1, dimensions=[
+                    {'Name': 'Topic', 'Value': topic},
+                    {'Name': 'Stage', 'Value': 'InitialRequest'}
+                ])
+
         return cors_response(200, {
-            'message': 'Please check your email to confirm your subscription',
-            'email': email
+            'message': 'Please check your email to confirm your subscription!',
+            'topics': topics if topics else 'all'
         })
 
     except Exception as e:
-        log_error('subscription_error',
-                  error_type=type(e).__name__,
-                  error_message=str(e),
-                  email=body.get('email', 'unknown') if 'body' in locals() else 'unknown')
+        log_error('subscription_error', error_type=type(e).__name__, error_message=str(e))
         monitoring.put_metric('SubscriptionAttempt', 1, dimensions=[
             {'Name': 'Status', 'Value': 'Error'}
         ])
         return cors_response(500, {'error': 'Internal server error'})
 
 
-def send_confirmation_email(email, confirm_url):
-    """Send double opt-in confirmation email.
+def is_valid_email(email):
+    """Validate email format using regex."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
 
-    Args:
-        email: Email address to send confirmation to.
-        confirm_url: Full URL for confirmation link.
-    """
+
+def send_confirmation_email(email, confirmation_url):
+    """Send double opt-in confirmation email."""
     sender_email = os.environ.get('SENDER_EMAIL')
 
     html_body = f"""
     <!DOCTYPE html>
     <html>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
-                 sans-serif; padding: 40px; background: #f8f9fa;">
-        <div style="max-width: 500px; margin: 0 auto; background: white;
-                    border-radius: 16px; padding: 40px;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);">
-            <div style="text-align: center; margin-bottom: 30px;">
-                <h1 style="color: #0f2027; font-size: 28px; font-weight: 700;
-                           letter-spacing: 2px; margin: 0;">
-                    IRIDIA DAILY
-                </h1>
-                <p style="color: #6c757d; font-size: 14px; margin: 8px 0 0 0;
-                          letter-spacing: 0.5px;">
-                    Research Intelligence Daily
-                </p>
-            </div>
-
-            <h2 style="color: #1a1a1a; margin: 0 0 20px 0; font-size: 24px;">
-                Confirm Your Subscription
-            </h2>
-
-            <p style="color: #6c757d; line-height: 1.6; margin: 0 0 20px 0;">
-                Thanks for your interest in Iridia Daily! Click the button below
-                to confirm your subscription and start receiving fascinating
-                scientific insights from recently published research papers.
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+                   line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .container {{ background: #f8f9fa; padding: 30px; border-radius: 8px; }}
+            .button {{ display: inline-block; padding: 12px 30px; background: #0f2027; 
+                      color: white; text-decoration: none; border-radius: 5px; 
+                      font-weight: 600; margin: 20px 0; }}
+            .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; 
+                      font-size: 12px; color: #666; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Confirm Your Iridia Daily Subscription</h2>
+            <p>Thank you for subscribing to Iridia Daily! We're excited to share cutting-edge research insights with you.</p>
+            <p>To complete your subscription, please confirm your email address:</p>
+            <p style="text-align: center;">
+                <a href="{confirmation_url}" class="button">Confirm Subscription</a>
             </p>
-
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="{confirm_url}"
-                   style="display: inline-block; padding: 14px 32px;
-                          background: linear-gradient(135deg, #0f2027 0%, #2c5364 100%);
-                          color: white; text-decoration: none; border-radius: 8px;
-                          font-weight: 600; font-size: 16px;">
-                    Confirm Subscription
-                </a>
+            <p>Or copy and paste this link into your browser:</p>
+            <p style="word-break: break-all; color: #666; font-size: 12px;">{confirmation_url}</p>
+            <p>This link will expire in 24 hours.</p>
+            <div class="footer">
+                <p><strong>Iridia Daily</strong> - Research Intelligence Daily</p>
+                <p>© 2025 Iridia Daily. Intelligence worth sharing.</p>
             </div>
-
-            <div style="margin-top: 30px; padding: 20px; background: #f8f9fa;
-                        border-radius: 8px; border-left: 4px solid #0f2027;">
-                <p style="margin: 0; color: #6c757d; font-size: 14px;
-                          line-height: 1.5;">
-                    <strong style="color: #1a1a1a;">What to expect:</strong><br>
-                    • Daily emails with 5 breakthrough research findings<br>
-                    • Direct links to original research papers<br>
-                    • Smart, accessible science communication
-                </p>
-            </div>
-
-            <p style="color: #adb5bd; font-size: 12px; margin-top: 30px;
-                      text-align: center; line-height: 1.5;">
-                This confirmation link expires in 24 hours.<br>
-                If you didn't request this, please ignore this email.
-            </p>
         </div>
     </body>
     </html>
     """
 
-    plain_text = f"""
-IRIDIA DAILY - Confirm Your Subscription
+    text_body = f"""
+    CONFIRM YOUR IRIDIA DAILY SUBSCRIPTION
 
-Thanks for your interest in Iridia Daily!
+    Thank you for subscribing to Iridia Daily!
 
-Please confirm your subscription by visiting this link:
-{confirm_url}
+    To complete your subscription, please click this link:
+    {confirmation_url}
 
-What to expect:
-• Daily emails with 5 breakthrough research findings
-• Direct links to original research papers
-• Smart, accessible science communication
+    This link will expire in 24 hours.
 
-This confirmation link expires in 24 hours.
-If you didn't request this, please ignore this email.
-
----
-Iridia Daily - Research Intelligence Daily
+    ---
+    Iridia Daily - Research Intelligence Daily
+    © 2025 Iridia Daily. Intelligence worth sharing.
     """
 
-    try:
-        def send_email():
-            return ses_v2.send_email(
-                FromEmailAddress=f"Iridia Daily <{sender_email}>",
-                Destination={'ToAddresses': [email]},
-                Content={
-                    'Simple': {
-                        'Subject': {
-                            'Data': '🌊 Confirm Your Iridia Daily Subscription'
-                        },
-                        'Body': {
-                            'Html': {'Data': html_body},
-                            'Text': {'Data': plain_text}
-                        }
-                    }
+    ses_v2.send_email(
+        FromEmailAddress=f"Iridia Daily <{sender_email}>",
+        Destination={'ToAddresses': [email]},
+        Content={
+            'Simple': {
+                'Subject': {'Data': 'Confirm Your Iridia Daily Subscription'},
+                'Body': {
+                    'Text': {'Data': text_body},
+                    'Html': {'Data': html_body}
                 }
-            )
-
-        monitoring.retry_with_backoff(send_email, max_attempts=2)
-        monitoring.put_metric('ConfirmationEmailSent', 1)
-
-        log_info('confirmation_email_delivered', 
-                 email=email,
-                 confirmation_url_length=len(confirm_url))
-
-    except Exception as e:
-        log_error('confirmation_email_failed',
-                  email=email,
-                  error_type=type(e).__name__,
-                  error_message=str(e))
-        monitoring.put_metric('ConfirmationEmailFailed', 1)
-        raise
-
-
-def is_valid_email(email):
-    """Validate email format according to RFC 5321.
-
-    Args:
-        email: Email address to validate.
-
-    Returns:
-        bool: True if valid, False otherwise.
-    """
-    if not email or not isinstance(email, str):
-        return False
-
-    pattern = (r'^[a-zA-Z0-9][a-zA-Z0-9._%+-]*[a-zA-Z0-9]@'
-               r'[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$')
-
-    if not re.match(pattern, email):
-        return False
-
-    if '..' in email or email.count('@') != 1:
-        return False
-
-    local, domain = email.split('@')
-
-    if (len(local) > 64 or len(domain) > 255 or
-            local[0] == '.' or local[-1] == '.' or
-            domain[0] in '.--' or domain[-1] in '.--'):
-        return False
-
-    return True
+            }
+        }
+    )
 
 
 def cors_response(status_code, body):
-    """Return CORS-enabled API response.
-
-    Args:
-        status_code: HTTP status code.
-        body: Response body dict.
-
-    Returns:
-        dict: API Gateway response.
-    """
+    """Create API Gateway response with CORS headers."""
     return {
         'statusCode': status_code,
         'headers': {
             'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
             'Content-Type': 'application/json'
         },
         'body': json.dumps(body)
