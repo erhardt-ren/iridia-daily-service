@@ -1,524 +1,595 @@
-"""Newsletter generation and distribution with personalized unsubscribe links.
-
-Generates daily newsletter from PubMed research papers and delivers to
-subscribers with secure, personalized unsubscribe tokens using SES bulk API.
-"""
+"""Newsletter generation handler with correct grouped newsletter logic."""
 
 import json
 import boto3
 import os
-import re
 from datetime import datetime
+from collections import defaultdict
 
-from .clients import PubMedClient, BedrockClient
-from .email_generator import EmailGenerator
 from . import monitoring
+from .clients.bedrock_client import BedrockClient
+from .clients.pubmed_client import PubMedClient
+from .email_generator import EmailGenerator
 from .token_utils import generate_unsubscribe_token
 from .logger import set_lambda_context, log_info, log_warning, log_error, log_metric
+from .utils import get_api_url_from_api_id
+from .config import CATEGORY_MAPPING
 
-ses = boto3.client('ses', region_name='us-east-1')
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
+BULK_BATCH_SIZE = 50  # SES bulk email limit
+PAPERS_PER_TOPIC = 5  # Papers to fetch per topic
+PAPERS_PER_NEWSLETTER = 5  # Papers per newsletter
 
-# Bulk send batch size (SES limit is 50)
-BULK_BATCH_SIZE = 50
-
-def get_api_url():
-    """Get API Gateway URL from environment variable.
-
-    Returns:
-        str: Base API URL.
-
-    Raises:
-        ValueError: If API_URL environment variable is not set.
-    """
-    api_url = os.environ.get('API_URL', '').strip()
-    
-    if not api_url:
-        raise ValueError(
-            "API_URL environment variable is not set. "
-            "Ensure template.yaml includes API_URL in Environment Variables."
-        )
-    
-    return api_url
 
 def lambda_handler(event, context):
-    """Generate and send daily newsletter with personalized links.
+    """Generate and send personalized newsletters with correct group logic.
 
     Args:
-        event: Lambda event object.
-        context: Lambda context object.
+        event: Lambda event (scheduled or manual invoke).
+        context: Lambda context.
 
     Returns:
-        dict: Response with status code, body, and delivery statistics.
+        Dictionary with delivery statistics.
     """
     set_lambda_context(context)
-    log_info('newsletter_handler_started')
     start_time = datetime.now()
 
-    contact_list_name = os.environ.get('CONTACT_LIST_NAME')
-    sender_email = os.environ.get('SENDER_EMAIL')
-    api_url = os.environ.get('API_URL', '')
-
-    if not contact_list_name or not sender_email:
-        log_error('config_error', 
-                  missing_vars='CONTACT_LIST_NAME or SENDER_EMAIL')
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'ConfigError'}
-        ])
-        return {'statusCode': 500, 'body': 'Configuration error'}
-
-    if not monitoring.verify_ses_sender(sender_email):
-        log_error('sender_not_verified', sender_email=sender_email)
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'SenderNotVerified'}
-        ])
-        return {'statusCode': 500, 'body': 'Sender email not verified'}
-
-    log_info('fetching_subscribers')
-    subscribers = get_subscribers(contact_list_name)
-
-    if not subscribers:
-        log_warning('no_subscribers_found')
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'NoSubscribers'}
-        ])
-        return {'statusCode': 200, 'body': 'No subscribers'}
-
-    log_info('subscribers_retrieved', count=len(subscribers))
-    monitoring.put_metric('SubscriberCount', len(subscribers))
-
-    valid_subscribers = [email for email in subscribers if is_valid_email(email)]
-    if len(valid_subscribers) != len(subscribers):
-        invalid_count = len(subscribers) - len(valid_subscribers)
-        log_warning('invalid_emails_filtered', 
-                    invalid_count=invalid_count)
-        monitoring.put_metric('InvalidSubscriberEmails', invalid_count)
-
-    if not valid_subscribers:
-        log_error('no_valid_subscribers')
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'NoValidSubscribers'}
-        ])
-        return {'statusCode': 500, 'body': 'No valid subscribers'}
-
-    log_info('fetching_papers')
-    pubmed = PubMedClient()
-    papers = pubmed.get_recent_papers(num_papers=5)
-
-    if not papers:
-        log_error('no_papers_found')
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'NoPapers'}
-        ])
-        return {'statusCode': 500, 'body': 'No papers found'}
-
-    log_info('papers_retrieved', count=len(papers))
-    monitoring.put_metric('PapersRetrieved', len(papers))
-
-    log_info('generating_summaries')
-    bedrock = BedrockClient()
-    summaries = bedrock.generate_summaries(papers)
-
-    # Validate that summary generation produced correct number of summaries
-    # with acceptable quality. Do not proceed with newsletter if validation
-    # fails to prevent sending incomplete or incorrect content.
-    if not validate_summaries(summaries, papers):
-        error_msg = (
-            f"Summary generation validation failed. "
-            f"Expected {len(papers)} summaries, received {len(summaries)}. "
-            f"Newsletter distribution aborted to prevent sending incomplete "
-            f"content to subscribers."
-        )
-        
-        log_error('summary_validation_failed',
-                  expected_count=len(papers),
-                  received_count=len(summaries),
-                  error_message=error_msg)
-        
-        # Publish CloudWatch metric for monitoring and alerting
-        monitoring.put_metric('SummaryGenerationFailed', 1, dimensions=[
-            {'Name': 'Reason', 'Value': 'CountMismatch'}
-        ])
-        
-        # Send immediate SNS alert to operations team
-        send_alert_notification(
-            message=(
-                f"{error_msg}\n\n"
-                f"Papers retrieved: {len(papers)}\n"
-                f"Summaries generated: {len(summaries)}\n"
-                f"Timestamp: {datetime.now().isoformat()}"
-            ),
-            subject="🚨 Iridia Daily: Summary Generation Failed"
-        )
-        
-        # Record failure in metrics and return error without sending newsletter
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'SummaryValidationFailed'}
-        ])
-        
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'error': 'Summary generation validation failed',
-                'expected_summaries': len(papers),
-                'received_summaries': len(summaries)
-            })
-        }
-
-    log_info('summary_validation_passed', count=len(summaries))
-
-    while len(summaries) < len(papers):
-        summaries.append("Breakthrough research published.")
-
-    log_info('sending_bulk_newsletters', subscriber_count=len(valid_subscribers))
-    email_gen = EmailGenerator()
+    log_info('newsletter_generation_started')
+    monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
+        {'Name': 'Status', 'Value': 'Started'}
+    ])
 
     try:
-        date_str = datetime.now().strftime("%A, %B %d, %Y")
-        subject = email_gen.generate_subject_line()
+        # STEP 1: Get subscribers with preferences
+        contact_list_name = os.environ.get('CONTACT_LIST_NAME')
+        subscribers = get_subscribers_with_preferences(contact_list_name)
 
-        result = send_bulk_newsletters(
-            subscribers=valid_subscribers,
-            sender_email=sender_email,
-            subject=subject,
-            papers=papers,
-            summaries=summaries,
-            date_str=date_str,
-            api_url=api_url,
-            email_gen=email_gen
+        if not subscribers:
+            log_warning('no_active_subscribers')
+            return {'statusCode': 200, 'body': 'No active subscribers'}
+
+        log_info('subscribers_fetched', count=len(subscribers))
+        
+        # Log first few subscribers to debug preferences
+        for i, sub in enumerate(subscribers[:3]):
+            log_info('subscriber_detail',
+                    index=i,
+                    email=sub['email'],
+                    topics=sub['topics'],
+                    topics_type=type(sub['topics']).__name__)
+
+        # STEP 2: Group subscribers by unique preference combinations
+        subscriber_groups = group_subscribers_by_preferences(subscribers)
+        
+        if not subscriber_groups:
+            log_warning('no_subscriber_groups')
+            return {'statusCode': 200, 'body': 'No valid subscriber groups'}
+        
+        log_info('subscriber_groups_created',
+                num_groups=len(subscriber_groups),
+                groups={str(k): len(v) for k, v in subscriber_groups.items()})
+
+        # STEP 3: Determine ALL topics needed across all groups
+        all_needed_topics = get_all_needed_topics(subscriber_groups)
+        
+        log_info('all_topics_identified',
+                topics=list(all_needed_topics),
+                count=len(all_needed_topics))
+
+        # STEP 4: Make ONE PubMed call for all topics
+        pubmed_client = PubMedClient()
+        papers_by_topic, pmid_to_topic = pubmed_client.get_papers_for_multiple_topics(
+            all_needed_topics,
+            papers_per_topic=PAPERS_PER_TOPIC
         )
 
+        if not papers_by_topic:
+            log_warning('no_papers_found')
+            return {'statusCode': 200, 'body': 'No papers found'}
+
+        log_info('papers_fetched',
+                topics=list(papers_by_topic.keys()),
+                total_papers=sum(len(papers) for papers in papers_by_topic.values()))
+
+        # STEP 5: For each group, select 5 papers matching THEIR preferences
+        newsletters = build_newsletters_for_groups(subscriber_groups, papers_by_topic)
+        
+        if not newsletters:
+            log_warning('no_newsletters_built')
+            return {'statusCode': 200, 'body': 'No newsletters built'}
+        
+        log_info('newsletters_built', num_newsletters=len(newsletters))
+
+        # STEP 6: Collect ALL unique papers across all newsletters
+        all_unique_papers = {}
+        for newsletter in newsletters.values():
+            for paper in newsletter['papers']:
+                all_unique_papers[paper['pmid']] = paper
+        
+        log_info('unique_papers_for_summaries', count=len(all_unique_papers))
+
+        # STEP 7: Generate summaries for all unique papers (ONE Bedrock call)
+        bedrock_client = BedrockClient()
+        papers_list = list(all_unique_papers.values())
+        summaries_by_pmid = generate_summaries_for_papers(bedrock_client, papers_list)
+
+        if not summaries_by_pmid:
+            log_error('summary_generation_failed')
+            return {'statusCode': 500, 'body': 'Summary generation failed'}
+
+        log_info('summaries_generated', count=len(summaries_by_pmid))
+
+        # STEP 8: Send individual newsletter to each group
+        sender_email = os.environ.get('SENDER_EMAIL')
+        result = send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email)
+
+        # Log completion
         duration = (datetime.now() - start_time).total_seconds()
-
-        log_info('newsletter_sent',
-                 delivered=result['delivered'],
-                 failed=result['failed'],
-                 duration_seconds=round(duration, 2))
-        
-        log_metric('newsletter_duration',
-                   value=duration,
-                   unit='Seconds',
-                   papers=len(papers),
-                   subscribers=result['delivered'])
-        
-        monitoring.put_metric('NewsletterDelivered', result['delivered'])
-        monitoring.put_metric('NewsletterGenerationTime', duration, unit='Seconds')
-
-        if result['failed'] > 0:
-            log_warning('delivery_failures',
-                        failed_count=result['failed'],
-                        sample_emails=result['failed_emails'][:5])
-            monitoring.put_metric('NewsletterFailed', result['failed'])
-
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'Success'}
-        ])
+        log_metric('NewsletterGenerationDuration', duration, unit='Seconds')
+        log_info('newsletter_generation_completed', **result)
 
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Newsletter sent successfully',
-                'subscribers': result['delivered'],
-                'papers': len(papers),
-                'duration_seconds': round(duration, 2)
-            })
+            'body': json.dumps(result)
         }
 
     except Exception as e:
-        log_error('newsletter_send_error',
-                  error_type=type(e).__name__,
-                  error_message=str(e))
-        monitoring.put_metric('NewsletterGeneration', 1, dimensions=[
-            {'Name': 'Status', 'Value': 'Error'}
-        ])
-        return {'statusCode': 500, 'body': json.dumps(f'Error: {str(e)}')}
+        log_error('newsletter_generation_failed', error=str(e))
+        raise
 
 
-def get_subscribers(contact_list_name):
-    """Retrieve active subscribers from contact list.
+def group_subscribers_by_preferences(subscribers):
+    """Group subscribers by their unique topic preferences.
+    
+    Args:
+        subscribers: List of dicts with 'email' and 'topics'.
+    
+    Returns:
+        Dict mapping preference_key to list of emails.
+        preference_key is either:
+        - None (for subscribers wanting all topics)
+        - tuple of sorted topic strings (e.g., ('space', 'technology'))
+    """
+    groups = defaultdict(list)
+    
+    for subscriber in subscribers:
+        email = subscriber['email']
+        topics = subscriber['topics']
+        
+        # Create preference key
+        if topics is None:
+            # Wants all topics - special group
+            pref_key = None
+            pref_display = 'all'
+        else:
+            # Specific topics - sorted tuple
+            pref_key = tuple(sorted(topics))
+            pref_display = list(pref_key)
+        
+        groups[pref_key].append(email)
+        
+        log_info('subscriber_grouped',
+                email=email,
+                topics_raw=topics,
+                pref_key=str(pref_key),
+                pref_display=pref_display)
+    
+    log_info('grouping_complete',
+            num_groups=len(groups),
+            group_keys=[str(k) if k else 'all' for k in groups.keys()])
+    
+    return dict(groups)
+
+
+def get_all_needed_topics(subscriber_groups):
+    """Get all unique topics needed across all subscriber groups.
+    
+    Args:
+        subscriber_groups: Dict mapping preference_key to list of emails.
+    
+    Returns:
+        Set of all unique topic strings needed.
+    """
+    all_topics = set()
+    
+    for pref_key in subscriber_groups.keys():
+        if pref_key is None:
+            # This group wants all topics, so include all available
+            all_topics.update(CATEGORY_MAPPING.keys())
+            all_topics.discard('default')  # Don't fetch 'default'
+        else:
+            # This group wants specific topics
+            all_topics.update(pref_key)
+    
+    return all_topics
+
+
+def build_newsletters_for_groups(subscriber_groups, papers_by_topic):
+    """Build newsletter for each subscriber group with balanced paper distribution.
+    
+    Papers are distributed evenly across requested topics using round-robin.
+    This ensures users see a variety of topics rather than all papers from one topic.
+    
+    Args:
+        subscriber_groups: Dict mapping preference_key to list of emails.
+        papers_by_topic: Dict mapping topic to list of papers.
+    
+    Returns:
+        Dict mapping preference_key to newsletter dict with:
+        - 'papers': List of 5 papers with balanced topic distribution
+        - 'recipients': List of email addresses
+    """
+    newsletters = {}
+    
+    for pref_key, recipients in subscriber_groups.items():
+        # Collect papers matching THIS group's preferences
+        group_papers_by_topic = {}
+        
+        if pref_key is None:
+            # Wants ALL topics - include papers from all topics
+            group_papers_by_topic = papers_by_topic.copy()
+        else:
+            # Wants SPECIFIC topics - only include papers from those topics
+            for topic in pref_key:
+                if topic in papers_by_topic:
+                    group_papers_by_topic[topic] = papers_by_topic[topic]
+        
+        if not group_papers_by_topic:
+            log_warning('no_papers_for_group',
+                       preferences=list(pref_key) if pref_key else 'all',
+                       recipients_count=len(recipients))
+            continue
+        
+        # Distribute papers evenly using round-robin
+        selected_papers = distribute_papers_evenly(
+            group_papers_by_topic, 
+            PAPERS_PER_NEWSLETTER
+        )
+        
+        if not selected_papers:
+            log_warning('no_papers_after_distribution',
+                       preferences=list(pref_key) if pref_key else 'all',
+                       recipients_count=len(recipients))
+            continue
+        
+        newsletters[pref_key] = {
+            'papers': selected_papers,
+            'recipients': recipients
+        }
+        
+        # Log topic distribution
+        topic_counts = {}
+        for paper in selected_papers:
+            topic = paper.get('topic', 'unknown')
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+        
+        log_info('newsletter_built',
+                preferences=list(pref_key) if pref_key else 'all',
+                papers_count=len(selected_papers),
+                recipients_count=len(recipients),
+                topic_distribution=topic_counts)
+    
+    return newsletters
+
+
+def distribute_papers_evenly(papers_by_topic, target_count):
+    """Distribute papers evenly across topics using round-robin, then group by topic.
+    
+    First uses round-robin to ensure balanced representation, then sorts by topic
+    so papers from the same topic appear together in the final newsletter.
+    
+    Args:
+        papers_by_topic: Dict mapping topic to list of papers.
+        target_count: Number of papers to select.
+    
+    Returns:
+        List of papers with balanced topic distribution, grouped by topic.
+    """
+    if not papers_by_topic:
+        return []
+    
+    # Create list of (topic, papers) sorted by topic name for consistency
+    topic_papers_list = [(topic, papers[:]) for topic, papers in sorted(papers_by_topic.items())]
+    
+    selected = []
+    round_num = 0
+    
+    # Round-robin: take one paper from each topic in turn
+    while len(selected) < target_count:
+        added_this_round = False
+        
+        for topic, papers in topic_papers_list:
+            if len(selected) >= target_count:
+                break
+                
+            # Take next paper from this topic if available
+            if round_num < len(papers):
+                paper = papers[round_num].copy()
+                paper['topic'] = topic  # Add topic for tracking
+                selected.append(paper)
+                added_this_round = True
+        
+        # If no papers were added this round, we've exhausted all topics
+        if not added_this_round:
+            break
+        
+        round_num += 1
+    
+    # Sort papers by topic so all papers from same topic are grouped together
+    selected.sort(key=lambda p: p.get('topic', 'zzz'))
+    
+    log_info('papers_distributed',
+            target=target_count,
+            actual=len(selected),
+            topics=list(papers_by_topic.keys()),
+            rounds=round_num,
+            sorted_by_topic=True)
+    
+    return selected
+
+
+def generate_summaries_for_papers(bedrock_client, papers):
+    """Generate summaries for papers in ONE Bedrock call.
 
     Args:
-        contact_list_name (str): Name of SES contact list.
+        bedrock_client: BedrockClient instance.
+        papers: List of paper dicts.
 
     Returns:
-        list: Email addresses of active subscribers.
+        Dict mapping PMID to summary string.
+    """
+    if not papers:
+        return {}
+    
+    try:
+        summaries = bedrock_client.generate_summaries(papers)
+        
+        if not summaries or len(summaries) != len(papers):
+            log_error('summary_count_mismatch',
+                     expected=len(papers),
+                     got=len(summaries) if summaries else 0)
+            if not summaries:
+                return {}
+        
+        # Map PMIDs to summaries
+        summaries_by_pmid = {}
+        for paper, summary in zip(papers, summaries):
+            summaries_by_pmid[paper['pmid']] = summary
+        
+        return summaries_by_pmid
+        
+    except Exception as e:
+        log_error('summary_generation_failed', error=str(e))
+        return {}
+
+
+def send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email):
+    """Send individual newsletter to each subscriber group.
+
+    Args:
+        newsletters: Dict mapping preference_key to newsletter dict.
+        summaries_by_pmid: Dict mapping PMID to summary.
+        pmid_to_topic: Dict mapping PMID to topic.
+        sender_email: Sender email address.
+
+    Returns:
+        Dict with delivery statistics.
+    """
+    api_url = get_api_url_from_api_id()
+    total_sent = 0
+    email_generator = EmailGenerator()
+    date_str = datetime.now().strftime('%B %d, %Y')
+    
+    for pref_key, newsletter in newsletters.items():
+        papers = newsletter['papers']
+        recipients = newsletter['recipients']
+        
+        # Filter to papers we have summaries for
+        valid_papers = []
+        valid_summaries = []
+        paper_topics = []
+        
+        for paper in papers:
+            pmid = paper['pmid']
+            if pmid in summaries_by_pmid:
+                valid_papers.append(paper)
+                valid_summaries.append(summaries_by_pmid[pmid])
+                paper_topics.append(pmid_to_topic.get(pmid, 'default'))
+        
+        if not valid_papers:
+            log_warning('no_valid_papers_for_group',
+                       preferences=list(pref_key) if pref_key else 'all')
+            continue
+        
+        # Log what's being sent
+        topic_dist = defaultdict(int)
+        for topic in paper_topics:
+            topic_dist[topic] += 1
+        
+        log_info('sending_newsletter',
+                preferences=list(pref_key) if pref_key else 'all',
+                papers_count=len(valid_papers),
+                recipients_count=len(recipients),
+                topics_in_newsletter=dict(topic_dist))
+        
+        # Generate subject
+        subject_line = email_generator.generate_subject_line(paper_count=len(valid_papers))
+        
+        # Send to recipients in batches
+        for i in range(0, len(recipients), BULK_BATCH_SIZE):
+            batch_emails = recipients[i:i + BULK_BATCH_SIZE]
+            
+            destinations = []
+            for email in batch_emails:
+                token = generate_unsubscribe_token(email)
+                unsubscribe_url = f"{api_url}/unsubscribe?token={token}"
+                preferences_url = f"{api_url}/preferences?token={token}"
+                
+                html_body = email_generator.generate_html_email(
+                    valid_papers,
+                    valid_summaries,
+                    date_str,
+                    unsubscribe_url,
+                    preferences_url,
+                    paper_topics
+                )
+                text_body = email_generator.generate_plain_text_email(
+                    valid_papers,
+                    valid_summaries,
+                    date_str,
+                    unsubscribe_url,
+                    preferences_url,
+                    paper_topics
+                )
+                
+                destinations.append({
+                    'Destination': {'ToAddresses': [email]},
+                    'ReplacementEmailContent': {
+                        'ReplacementTemplate': {
+                            'ReplacementTemplateData': json.dumps({
+                                'subject': subject_line,
+                                'html_content': html_body,
+                                'text_content': text_body
+                            })
+                        }
+                    }
+                })
+            
+            try:
+                ses_v2.send_bulk_email(
+                    FromEmailAddress=f"Iridia Daily <{sender_email}>",
+                    DefaultContent={
+                        'Template': {
+                            'TemplateName': 'IridiaDailyNewsletter',
+                            'TemplateData': json.dumps({
+                                'subject': 'Iridia Daily Newsletter',
+                                'html_content': '<html><body>Default</body></html>',
+                                'text_content': 'Default'
+                            })
+                        }
+                    },
+                    BulkEmailEntries=destinations
+                )
+                total_sent += len(batch_emails)
+                log_info('batch_sent', size=len(batch_emails))
+                
+            except Exception as e:
+                log_error('batch_failed', error=str(e), size=len(batch_emails))
+    
+    return {
+        'total_sent': total_sent,
+        'unique_newsletters': len(newsletters)
+    }
+
+
+def get_subscribers_with_preferences(contact_list_name):
+    """Fetch subscribers with their topic preferences from SES.
+    
+    Reads preferences from TopicPreferences field which is always returned
+    by list_contacts - no individual get_contact calls needed.
+
+    Args:
+        contact_list_name: SES contact list name.
+
+    Returns:
+        List of dicts with 'email' and 'topics' fields.
     """
     subscribers = []
     next_token = None
 
     try:
         while True:
-            params = {'ContactListName': contact_list_name}
+            params = {
+                'ContactListName': contact_list_name,
+                'Filter': {
+                    'FilteredStatus': 'OPT_IN'
+                }
+            }
+
             if next_token:
                 params['NextToken'] = next_token
 
             response = ses_v2.list_contacts(**params)
 
             for contact in response.get('Contacts', []):
-                topic_prefs = contact.get('TopicPreferences', [{}])[0]
-                if topic_prefs.get('SubscriptionStatus') == 'OPT_IN':
-                    subscribers.append(contact['EmailAddress'])
+                email = contact['EmailAddress']
+                
+                # Read topics directly from TopicPreferences (always returned)
+                topic_prefs = contact.get('TopicPreferences', [])
+                
+                # Extract topics where SubscriptionStatus is OPT_IN
+                opted_in_topics = [
+                    tp['TopicName'] 
+                    for tp in topic_prefs 
+                    if tp.get('SubscriptionStatus') == 'OPT_IN'
+                ]
+                
+                # If no topics opted in OR all topics opted in, return None (gets all content)
+                # Otherwise return the specific list of opted-in topics
+                all_available_topics = set(CATEGORY_MAPPING.keys()) - {'default'}
+                
+                if not opted_in_topics or set(opted_in_topics) == all_available_topics:
+                    topics = None  # Gets all topics
+                else:
+                    topics = opted_in_topics
+                
+                log_info('subscriber_fetched',
+                        email=email,
+                        opted_in_topics=opted_in_topics,
+                        parsed_topics=topics)
+                
+                subscribers.append({
+                    'email': email,
+                    'topics': topics
+                })
 
             next_token = response.get('NextToken')
             if not next_token:
                 break
 
-        return subscribers
-
     except Exception as e:
-        log_error('subscriber_retrieval_error',
-                  error_type=type(e).__name__,
-                  error_message=str(e))
-        return []
+        log_error('failed_to_fetch_subscribers', error=str(e))
+        raise
+
+    return subscribers
 
 
-def send_bulk_newsletters(subscribers, sender_email, subject, papers,
-                          summaries, date_str, api_url, email_gen):
-    """Send newsletters using SES bulk API with personalized content.
-
-    Each subscriber receives a personalized email with their own secure
-    unsubscribe token. Emails are sent in batches of 50 (SES limit) for
-    optimal performance while maintaining per-recipient personalization.
-    Uses fully custom content without requiring SES templates.
+def parse_topic_preferences(attrs_json):
+    """Parse topic preferences from SES AttributesData JSON.
 
     Args:
-        subscribers (list): Subscriber email addresses.
-        sender_email (str): Verified sender email address.
-        subject (str): Email subject line.
-        papers (list): Research papers to include.
-        summaries (list): Paper summaries.
-        date_str (str): Formatted date string.
-        api_url (str): Base API URL for unsubscribe links.
-        email_gen (EmailGenerator): Email generator instance.
+        attrs_json: JSON string from SES.
 
     Returns:
-        dict: Delivery statistics with 'delivered', 'failed', and
-            'failed_emails' keys.
+        List of topic strings, or None for all topics.
     """
-    delivered = 0
-    failed = 0
-    failed_emails = []
+    if not attrs_json:
+        log_info('empty_attrs', result='returning None for all topics')
+        return None
 
-    template_name = 'IridiaDailyNewsletter'
-    total_batches = ((len(subscribers) + BULK_BATCH_SIZE - 1)
-                     // BULK_BATCH_SIZE)
-
-    for batch_num in range(0, len(subscribers), BULK_BATCH_SIZE):
-        batch = subscribers[batch_num:batch_num + BULK_BATCH_SIZE]
-        current_batch = (batch_num // BULK_BATCH_SIZE) + 1
-
-        log_info('processing_batch',
-                 batch_number=current_batch,
-                 total_batches=total_batches,
-                 batch_size=len(batch))
-
-        bulk_entries = []
-
-        for email in batch:
-            try:
-                unsubscribe_token = generate_unsubscribe_token(email)
-                unsubscribe_url = (f"{api_url}/unsubscribe?"
-                                   f"token={unsubscribe_token}")
-
-                html_content = email_gen.generate_html_email(
-                    papers, summaries, date_str, unsubscribe_url
-                )
-                plain_text = email_gen.generate_plain_text_email(
-                    papers, summaries, date_str, unsubscribe_url
-                )
-
-                bulk_entries.append({
-                    'Destination': {
-                        'ToAddresses': [email]
-                    },
-                    'ReplacementEmailContent': {
-                        'ReplacementTemplate': {
-                            'ReplacementTemplateData': json.dumps({
-                                'subject': subject,
-                                'html_content': html_content,
-                                'text_content': plain_text
-                            })
-                        }
-                    }
-                })
-
-            except Exception as e:
-                log_error('email_preparation_error',
-                          email=email,
-                          error_type=type(e).__name__,
-                          error_message=str(e))
-                failed += 1
-                failed_emails.append(email)
-
-        if not bulk_entries:
-            log_warning('batch_empty', batch_number=current_batch)
-            continue
-
-        try:
-            response = ses_v2.send_bulk_email(
-                FromEmailAddress=f"Iridia Daily <{sender_email}>",
-                DefaultContent={
-                    'Template': {
-                        'TemplateName': template_name,
-                        'TemplateData': json.dumps({
-                            'subject': subject,
-                            'html_content': '',
-                            'text_content': ''
-                        })
-                    }
-                },
-                BulkEmailEntries=bulk_entries
-            )
-
-            batch_delivered = 0
-            batch_failed = 0
-            
-            for idx, result in enumerate(response.get('BulkEmailEntryResults', [])):
-                email = batch[idx] if idx < len(batch) else 'unknown'
-
-                if result.get('Status') == 'SUCCESS':
-                    delivered += 1
-                    batch_delivered += 1
-                else:
-                    failed += 1
-                    batch_failed += 1
-                    failed_emails.append(email)
-                    error_msg = result.get('Error', 'Unknown error')
-                    log_warning('email_delivery_failed',
-                                email=email,
-                                error=error_msg)
-
-            log_info('batch_complete',
-                     batch_number=current_batch,
-                     delivered=batch_delivered,
-                     failed=batch_failed,
-                     total_delivered=delivered,
-                     total_failed=failed)
-
-        except Exception as e:
-            log_error('bulk_send_error',
-                      batch_number=current_batch,
-                      error_type=type(e).__name__,
-                      error_message=str(e))
-            failed += len(batch)
-            failed_emails.extend(batch)
-
-    if failed > 0:
-        log_warning('total_delivery_failures',
-                    failed_count=failed,
-                    sample_failed_emails=failed_emails[:10])
-
-    return {
-        'delivered': delivered,
-        'failed': failed,
-        'failed_emails': failed_emails
-    }
-
-
-def is_valid_email(email):
-    """Validate email address format.
-
-    Checks email format according to RFC 5321 standards, including
-    local part rules, domain format, and length restrictions.
-
-    Args:
-        email (str): Email address to validate.
-
-    Returns:
-        bool: True if email format is valid, False otherwise.
-    """
-    if not email or not isinstance(email, str):
-        return False
-
-    # Check email format with regex
-    pattern = (r'^[a-zA-Z0-9][a-zA-Z0-9._%+-]*[a-zA-Z0-9]@'
-               r'[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$')
-
-    if not re.match(pattern, email):
-        return False
-
-    if '..' in email or email.count('@') != 1:
-        return False
-
-    if len(email) > 320:
-        return False
-
-    return True
-
-def validate_summaries(summaries, papers):
-    """Validate generated summaries against papers.
-    
-    Ensures each paper has a corresponding summary and checks quality
-    metrics. Logs warnings for summaries outside recommended bounds but
-    only fails validation if count mismatch occurs.
-    
-    Args:
-        summaries: List of generated summary strings.
-        papers: List of paper dictionaries.
-    
-    Returns:
-        bool: True if summary count matches paper count, False otherwise.
-    """
-    # Critical validation: count must match exactly
-    if len(summaries) != len(papers):
-        log_error('summary_count_mismatch',
-                  expected=len(papers),
-                  received=len(summaries))
-        return False
-    
-    # Quality checks: log warnings but don't fail
-    for i, summary in enumerate(summaries):
-        if not isinstance(summary, str):
-            log_warning('summary_not_string',
-                        summary_index=i + 1,
-                        summary_type=type(summary).__name__)
-            continue
-            
-        summary_len = len(summary)
-        
-        if summary_len < 50:
-            log_warning('summary_too_short',
-                        summary_index=i + 1,
-                        length=summary_len,
-                        min_recommended=50,
-                        preview=summary[:30])
-        
-        if summary_len > 1000:
-            log_warning('summary_too_long',
-                        summary_index=i + 1,
-                        length=summary_len,
-                        max_recommended=1000,
-                        preview=summary[:50])
-    
-    return True
-
-
-def send_alert_notification(message, subject="Iridia Daily Alert"):
-    """Send SNS alert notification for critical failures.
-    
-    Publishes alert message to configured SNS topic for operational
-    monitoring. Handles errors gracefully to avoid blocking the main
-    execution flow.
-    
-    Args:
-        message: Alert message content describing the failure.
-        subject: Alert subject line (default: "Iridia Daily Alert").
-    """
-    alert_topic_arn = os.environ.get('ALERT_TOPIC_ARN')
-    
-    if not alert_topic_arn:
-        log_warning('alert_topic_not_configured')
-        return
-    
     try:
-        sns = boto3.client('sns', region_name='us-east-1')
-        sns.publish(
-            TopicArn=alert_topic_arn,
-            Message=message,
-            Subject=subject
-        )
-        log_info('alert_sent', topic_arn=alert_topic_arn)
-    except Exception as e:
-        log_error('alert_send_failed',
-                  error_type=type(e).__name__,
-                  error_message=str(e))
+        attrs = json.loads(attrs_json)
+        topics = attrs.get('topics')
+        
+        log_info('parsing_attrs',
+                raw_json=attrs_json,
+                parsed_dict=attrs,
+                topics_key_value=topics,
+                topics_is_list=isinstance(topics, list),
+                topics_length=len(topics) if isinstance(topics, list) else 0)
+
+        if isinstance(topics, list) and len(topics) > 0:
+            log_info('valid_topics_found', topics=topics)
+            return topics
+        
+        log_info('invalid_topics', topics=topics, reason='not a non-empty list')
+        return None
+
+    except json.JSONDecodeError as e:
+        log_error('json_decode_error', attrs_json=attrs_json, error=str(e))
+        return None
+
+
+def log_preference_distribution(subscribers):
+    """Log metrics about subscriber preferences (unused but kept for compatibility)."""
+    pass

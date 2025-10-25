@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Update Preferences - Iridia Daily</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 40px 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #0f2027 0%, #2c5364 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            max-width: 500px;
+            width: 100%;
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #0f2027;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            color: #1a1a1a;
+            font-size: 24px;
+        }
+        .subtitle {
+            margin: 0 0 25px 0;
+            color: #6c757d;
+            font-size: 14px;
+        }
+        .topic-checkbox {
+            display: block;
+            padding: 12px 15px;
+            margin: 8px 0;
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .topic-checkbox:hover {
+            background: #e9ecef;
+            border-color: #0f2027;
+        }
+        .topic-checkbox input {
+            margin-right: 10px;
+        }
+        .topic-label {
+            font-size: 15px;
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+        .button {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            background: #0f2027;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: background 0.2s;
+        }
+        .button:hover:not(:disabled) {
+            background: #1a2f3a;
+        }
+        .button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .message {
+            padding: 12px 15px;
+            margin: 15px 0;
+            border-radius: 8px;
+            display: none;
+            font-size: 14px;
+        }
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            color: #6c757d;
+            font-size: 13px;
+            margin-top: 15px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">IRIDIA DAILY</div>
+        <h1>Update Your Preferences</h1>
+        <p class="subtitle">Managing preferences for <strong>$email</strong></p>
+
+        <div id="message" class="message"></div>
+
+        <form id="preferences-form">
+            <p style="margin: 0 0 12px 0; font-weight: 500; color: #1a1a1a; font-size: 15px;">
+                Select the topics you're interested in:
+            </p>
+
+            $checkboxes
+
+            <button type="submit" class="button">Save Preferences</button>
+        </form>
+
+        <p class="info">
+            You'll only receive papers matching your selected topics.
+            Select at least one topic to continue receiving newsletters.
+        </p>
+    </div>
+
+    <script>
+        const form = document.getElementById('preferences-form');
+        const messageDiv = document.getElementById('message');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const checkboxes = form.querySelectorAll('input[name="topics"]:checked');
+            const topics = Array.from(checkboxes).map(cb => cb.value);
+
+            if (topics.length === 0) {
+                showMessage('Please select at least one topic', 'error');
+                return;
+            }
+
+            const button = form.querySelector('button');
+            button.disabled = true;
+            button.textContent = 'Saving...';
+
+            try {
+                const response = await fetch(
+                    window.location.pathname + window.location.search,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ topics: topics })
+                    }
+                );
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('Preferences updated successfully!', 'success');
+                    button.textContent = 'Saved!';
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to update preferences'), 'error');
+                    button.disabled = false;
+                    button.textContent = 'Save Preferences';
+                }
+            } catch (error) {
+                showMessage('Error: Failed to connect to server', 'error');
+                button.disabled = false;
+                button.textContent = 'Save Preferences';
+            }
+        });
+
+        function showMessage(text, type) {
+            messageDiv.textContent = text;
+            messageDiv.className = 'message ' + type;
+            messageDiv.style.display = 'block';
+
+            if (type === 'success') {
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+    </script>
+</body>
+</html>

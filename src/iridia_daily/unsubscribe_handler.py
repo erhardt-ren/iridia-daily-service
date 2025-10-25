@@ -1,7 +1,6 @@
 """Unsubscribe request handler with secure token verification.
 
-Handles unsubscribe requests using tamper-proof tokens instead of
-plain email parameters to prevent unauthorized unsubscriptions.
+UPDATED: Works with new TopicPreferences structure. Sets all content topics to OPT_OUT.
 """
 
 import json
@@ -11,6 +10,8 @@ import os
 from . import monitoring
 from .token_utils import verify_unsubscribe_token
 from .logger import set_lambda_context, log_info, log_warning, log_error
+from .templates import template_loader
+from .config import CATEGORY_MAPPING
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
 
@@ -71,9 +72,16 @@ def lambda_handler(event, context):
 
             contact = monitoring.retry_with_backoff(get_contact, max_attempts=3)
 
-            topic_prefs = contact.get('TopicPreferences', [{}])[0]
+            # Check if already unsubscribed (all topics are OPT_OUT)
+            topic_prefs = contact.get('TopicPreferences', [])
+            
+            # Check if ANY topic is still OPT_IN
+            is_subscribed = any(
+                tp.get('SubscriptionStatus') == 'OPT_IN' 
+                for tp in topic_prefs
+            )
 
-            if topic_prefs.get('SubscriptionStatus') == 'OPT_OUT':
+            if not is_subscribed:
                 log_info('already_unsubscribed', email=email)
                 monitoring.put_metric('UnsubscribeAttempt', 1, dimensions=[
                     {'Name': 'Status', 'Value': 'AlreadyUnsubscribed'}
@@ -83,14 +91,22 @@ def lambda_handler(event, context):
                                    f'<p><strong>{email}</strong> is not '
                                    'subscribed to Iridia Daily.</p>')
 
+            # Build TopicPreferences with all topics set to OPT_OUT
+            all_topics = [key for key in CATEGORY_MAPPING.keys() if key != 'default']
+            all_topics.append('daily-research')  # Include main topic
+            
+            topic_preferences = []
+            for topic in all_topics:
+                topic_preferences.append({
+                    'TopicName': topic,
+                    'SubscriptionStatus': 'OPT_OUT'
+                })
+
             def update_contact():
                 return ses_v2.update_contact(
                     ContactListName=contact_list_name,
                     EmailAddress=email,
-                    TopicPreferences=[{
-                        'TopicName': 'daily-research',
-                        'SubscriptionStatus': 'OPT_OUT'
-                    }]
+                    TopicPreferences=topic_preferences
                 )
 
             monitoring.retry_with_backoff(update_contact, max_attempts=3)
@@ -138,72 +154,19 @@ def lambda_handler(event, context):
 
 
 def render_html(status_code, title, content):
-    """Render HTML response page.
-
+    """Render HTML response page using template.
+    
     Args:
         status_code: HTTP status code.
         title: Page title.
         content: HTML content to display.
-
+        
     Returns:
         dict: API Gateway response with HTML body.
     """
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{title} - Iridia Daily</title>
-        <style>
-            body {{
-                margin: 0;
-                padding: 40px 20px;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
-                             Arial, sans-serif;
-                background: linear-gradient(135deg, #0f2027 0%, #2c5364 100%);
-                min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }}
-            .container {{
-                max-width: 500px;
-                background: white;
-                border-radius: 16px;
-                padding: 40px;
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-            }}
-            h1 {{
-                margin: 0 0 20px 0;
-                color: #1a1a1a;
-                font-size: 28px;
-            }}
-            p {{
-                margin: 0 0 15px 0;
-                color: #6c757d;
-                font-size: 16px;
-                line-height: 1.6;
-            }}
-            .logo {{
-                text-align: center;
-                margin-bottom: 30px;
-                color: #0f2027;
-                font-size: 24px;
-                font-weight: 700;
-                letter-spacing: 2px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="logo">IRIDIA DAILY</div>
-            {content}
-        </div>
-    </body>
-    </html>
-    """
-
+    
+    html = template_loader.render_base_template(title, content)
+    
     return {
         'statusCode': status_code,
         'headers': {

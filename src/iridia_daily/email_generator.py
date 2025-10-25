@@ -1,45 +1,52 @@
 """Email content generation for newsletter distribution.
 
-Generates HTML and plain text email content with proper formatting
-and personalized unsubscribe links.
+Generates HTML and plain text email content with proper formatting,
+personalized unsubscribe links, and preferences management links.
 """
 
 import random
 from datetime import datetime
-from .utils import get_category_info
-from .config import SUBJECT_TEMPLATES
+from .config import SUBJECT_TEMPLATES, CATEGORY_MAPPING
 
 
 class EmailGenerator:
     """Generates email content for newsletter distribution."""
 
-    def generate_html_email(self, papers, summaries, date_str, unsubscribe_url=''):
-        """Generate HTML email content with personalized unsubscribe link.
+    def generate_html_email(self, papers, summaries, date_str, unsubscribe_url='', preferences_url='', paper_topics=None):
+        """Generate HTML email content with personalized links.
 
         Args:
             papers: List of paper dictionaries with metadata.
             summaries: List of generated summaries for papers.
             date_str: Formatted date string for newsletter.
             unsubscribe_url: Full unsubscribe URL with secure token.
+            preferences_url: Full preferences URL with secure token.
+            paper_topics: List of topic strings (e.g., 'neuroscience', 'space') for each paper.
 
         Returns:
             str: Complete HTML email content.
         """
+        # Use paper_topics if provided, otherwise fall back to 'default'
+        if paper_topics is None:
+            paper_topics = ['default'] * len(papers)
+        
         paper_sections = "".join([
-            self._create_paper_section(paper, summary, i == 0, i == len(papers) - 1)
-            for i, (paper, summary) in enumerate(zip(papers, summaries))
+            self._create_paper_section(paper, summary, topic, i == 0, i == len(papers) - 1)
+            for i, (paper, summary, topic) in enumerate(zip(papers, summaries, paper_topics))
         ])
 
-        return self._build_html_template(paper_sections, date_str, len(papers), unsubscribe_url)
+        return self._build_html_template(paper_sections, date_str, len(papers), unsubscribe_url, preferences_url)
 
-    def generate_plain_text_email(self, papers, summaries, date_str, unsubscribe_url=''):
-        """Generate plain text email content with personalized unsubscribe link.
+    def generate_plain_text_email(self, papers, summaries, date_str, unsubscribe_url='', preferences_url='', paper_topics=None):
+        """Generate plain text email content with personalized links.
 
         Args:
             papers: List of paper dictionaries with metadata.
             summaries: List of generated summaries for papers.
             date_str: Formatted date string for newsletter.
             unsubscribe_url: Full unsubscribe URL with secure token.
+            preferences_url: Full preferences URL with secure token.
+            paper_topics: List of topic strings for each paper (not used in plain text).
 
         Returns:
             str: Complete plain text email content.
@@ -58,17 +65,31 @@ class EmailGenerator:
 
         lines.extend([
             "=" * 50,
-            "\nIridia Daily - Research Intelligence Daily",
-            "© 2025 Iridia Daily. Intelligence worth sharing."
+            "\n© 2025 Iridia Daily. Intelligence worth sharing.",
+            ""
         ])
+        
+        # Add support link with coffee emoji
+        lines.append("☕ Support: https://buymeacoffee.com/iridia")
 
+        # Add footer links
+        footer_links = []
+        if preferences_url:
+            footer_links.append(f"Preferences: {preferences_url}")
         if unsubscribe_url:
-            lines.append(f"\nUnsubscribe: {unsubscribe_url}")
+            footer_links.append(f"Unsubscribe: {unsubscribe_url}")
+        
+        if footer_links:
+            lines.append("")
+            lines.extend(footer_links)
 
         return "\n".join(lines)
 
-    def generate_subject_line(self):
+    def generate_subject_line(self, paper_count=5):
         """Generate random subject line for newsletter.
+
+        Args:
+            paper_count: Number of papers in the newsletter.
 
         Returns:
             str: Formatted subject line.
@@ -76,23 +97,28 @@ class EmailGenerator:
         today = datetime.now()
         return random.choice(SUBJECT_TEMPLATES).format(
             day=today.strftime('%A'),
-            count=5,
+            count=paper_count,
             date=today.strftime('%B %d')
         )
 
-    def _create_paper_section(self, paper, summary, is_first, is_last):
+    def _create_paper_section(self, paper, summary, topic, is_first, is_last):
         """Create HTML section for a single paper.
 
         Args:
             paper: Paper metadata dictionary.
             summary: Generated summary text.
+            topic: Topic string (e.g., 'neuroscience', 'space').
             is_first: Whether this is the first paper.
             is_last: Whether this is the last paper.
 
         Returns:
             str: HTML section for paper.
         """
-        accent_color, category = get_category_info(summary)
+        # Get category info from CATEGORY_MAPPING using the assigned topic
+        if topic in CATEGORY_MAPPING:
+            accent_color, category_label, _ = CATEGORY_MAPPING[topic]
+        else:
+            accent_color, category_label, _ = CATEGORY_MAPPING['default']
 
         divider = "" if is_last else """
         <tr><td style="padding: 24px 40px;">
@@ -105,7 +131,7 @@ class EmailGenerator:
                 <table cellpadding="0" cellspacing="0" border="0" role="presentation">
                     <tr><td>
                         <div style="display: inline-block; background: linear-gradient(135deg, {accent_color}1A, {accent_color}0D); border: 1.5px solid {accent_color}40; color: {accent_color}; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 12px;">
-                            {category}
+                            {category_label}
                         </div>
                     </td></tr>
                 </table>
@@ -120,19 +146,29 @@ class EmailGenerator:
         </tr>
         {divider}"""
 
-    def _build_html_template(self, paper_sections, date_str, num_papers, unsubscribe_url):
-        """Build complete HTML email template with personalized unsubscribe link.
+    def _build_html_template(self, paper_sections, date_str, num_papers, unsubscribe_url, preferences_url):
+        """Build complete HTML email template with personalized links.
 
         Args:
             paper_sections: Combined HTML for all paper sections.
             date_str: Formatted date string.
             num_papers: Number of papers included.
             unsubscribe_url: Full unsubscribe URL with secure token.
+            preferences_url: Full preferences URL with secure token.
 
         Returns:
             str: Complete HTML email template.
         """
         unsubscribe_link = unsubscribe_url if unsubscribe_url else "#"
+        preferences_link = preferences_url if preferences_url else "#"
+
+        # Build footer links section
+        footer_links = []
+        if preferences_url:
+            footer_links.append(f'<a href="{preferences_link}" style="color: #6c757d; text-decoration: none; padding: 0 8px;">Preferences</a>')
+        footer_links.append(f'<a href="{unsubscribe_link}" style="color: #6c757d; text-decoration: none; padding: 0 8px;">Unsubscribe</a>')
+        
+        footer_links_html = '<span style="color: #dee2e6;">|</span>'.join(footer_links)
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -187,9 +223,16 @@ class EmailGenerator:
                     <p style="margin: 0 0 20px 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6;">
                         <strong style="color: var(--text-primary);">Iridia Daily</strong> delivers breakthrough research intelligence daily. Powered by AI, designed for curious minds.
                     </p>
-                    <p style="margin: 0 0 10px 0; color: var(--text-secondary); font-size: 12px;">© 2025 Iridia Daily. Intelligence worth sharing.</p>
-                    <p style="margin: 0; color: #adb5bd; font-size: 11px;">
-                        <a href="{unsubscribe_link}" style="color: #adb5bd; text-decoration: underline;">Unsubscribe</a>
+                    
+                    <p style="margin: 0 0 16px 0;">
+                        <a href="https://buymeacoffee.com/iridia" style="color: #6c757d; text-decoration: none; font-size: 13px;">
+                            ☕ <span style="border-bottom: 1px solid #dee2e6;">Support Iridia Daily</span>
+                        </a>
+                    </p>
+                    
+                    <p style="margin: 0 0 12px 0; color: var(--text-secondary); font-size: 11px;">© 2025 Iridia Daily. Intelligence worth sharing.</p>
+                    <p style="margin: 0; color: #6c757d; font-size: 11px; line-height: 1.8;">
+                        {footer_links_html}
                     </p>
                 </td></tr>
                 

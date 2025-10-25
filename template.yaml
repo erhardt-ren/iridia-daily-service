@@ -7,17 +7,6 @@ Globals:
     Runtime: python3.12
     Timeout: 30
     MemorySize: 256
-  Api:
-    Name: IridiaDailyApi
-    Cors:
-      AllowOrigin: "'*'"
-      AllowMethods: "'POST, GET, OPTIONS'"
-      AllowHeaders: "'Content-Type'"
-    MethodSettings:
-      - ResourcePath: "/*"
-        HttpMethod: "*"
-        ThrottlingRateLimit: 20
-        ThrottlingBurstLimit: 40
 
 Parameters:
   SenderEmail:
@@ -48,6 +37,24 @@ Parameters:
 
 Resources:
   # ==========================================
+  # API GATEWAY (explicitly defined, custom stage)
+  # ==========================================
+  IridiaApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: IridiaDailyApi
+      StageName: !Ref StageName
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'POST, GET, OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 40
+
+  # ==========================================
   # SECRETS MANAGEMENT - SECURE STORAGE
   # ==========================================
   HMACSecret:
@@ -63,7 +70,7 @@ Resources:
         RequireEachIncludedType: true
 
   # ==========================================
-  # SES CONTACT LIST AND TOPIC
+  # SES CONTACT LIST AND TOPICS
   # ==========================================
   NewsletterContactList:
     Type: AWS::SES::ContactList
@@ -75,6 +82,34 @@ Resources:
           DisplayName: Daily Research Newsletter
           Description: Daily scientific research insights
           DefaultSubscriptionStatus: OPT_IN
+        - TopicName: space
+          DisplayName: Space Research
+          Description: Space and astronomy research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: technology
+          DisplayName: Technology
+          Description: Technology and computing research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: medicine
+          DisplayName: Medicine
+          Description: Medical research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: biology
+          DisplayName: Biology
+          Description: Biology research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: environment
+          DisplayName: Environment
+          Description: Environmental research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: neuroscience
+          DisplayName: Neuroscience
+          Description: Brain and neuroscience research
+          DefaultSubscriptionStatus: OPT_OUT
+        - TopicName: physics
+          DisplayName: Physics
+          Description: Physics research
+          DefaultSubscriptionStatus: OPT_OUT
 
   # ==========================================
   # SES EMAIL TEMPLATE
@@ -167,14 +202,6 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref HMACSecret
 
-              # ==========================================
-              # CloudFormation (stack introspection)
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - cloudformation:DescribeStacks
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
-
   # ==========================================
   # LAMBDA FUNCTIONS
   # ==========================================
@@ -197,7 +224,8 @@ Resources:
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_URL: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+          API_STAGE_NAME: !Ref StageName
+          API_ID: !Ref IridiaApi
       Events:
         DailySchedule:
           Type: Schedule
@@ -219,10 +247,12 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_STAGE_NAME: !Ref StageName
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
+            RestApiId: !Ref IridiaApi
             Path: /subscribe
             Method: post
 
@@ -239,10 +269,12 @@ Resources:
           CONTACT_LIST_NAME: !Ref ContactListName
           SENDER_EMAIL: !Ref SenderEmail
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_STAGE_NAME: !Ref StageName
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
+            RestApiId: !Ref IridiaApi
             Path: /confirm
             Method: get
 
@@ -258,33 +290,63 @@ Resources:
         Variables:
           CONTACT_LIST_NAME: !Ref ContactListName
           HMAC_SECRET_ARN: !Ref HMACSecret
+          API_STAGE_NAME: !Ref StageName
       Events:
         ApiEndpoint:
           Type: Api
           Properties:
+            RestApiId: !Ref IridiaApi
             Path: /unsubscribe
             Method: get
 
+  PreferencesFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: NewsletterContactList
+    Properties:
+      FunctionName: iridia-daily-preferences
+      CodeUri: src/
+      Handler: iridia_daily.preferences_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CONTACT_LIST_NAME: !Ref ContactListName
+          HMAC_SECRET_ARN: !Ref HMACSecret
+          API_STAGE_NAME: !Ref StageName
+      Events:
+        GetPreferencesForm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /preferences
+            Method: get
+        UpdatePreferences:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /preferences
+            Method: post
+
   HealthCheckFunction:
-      Type: AWS::Serverless::Function
-      Properties:
-        FunctionName: iridia-daily-health
-        CodeUri: src/
-        Handler: iridia_daily.health_handler.lambda_handler
-        Timeout: 30
-        MemorySize: 256
-        Role: !GetAtt LambdaExecutionRole.Arn
-        Environment:
-          Variables:
-            SENDER_EMAIL: !Ref SenderEmail
-            HMAC_SECRET_ARN: !Ref HMACSecret
-        Events:
-          HealthEndpoint:
-            Type: Api
-            Properties:
-              Path: /health
-              Method: get
-              RestApiId: !Ref ServerlessRestApi
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: iridia-daily-health
+      CodeUri: src/
+      Handler: iridia_daily.health_handler.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SENDER_EMAIL: !Ref SenderEmail
+          HMAC_SECRET_ARN: !Ref HMACSecret
+          API_STAGE_NAME: !Ref StageName
+      Events:
+        HealthEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /health
+            Method: get
 
   # ==========================================
   # CLOUDWATCH ALARMS
@@ -343,6 +405,7 @@ Resources:
         - !Ref AlertTopic
       TreatMissingData: breaching
 
+
 Outputs:
   ContactListName:
     Description: SES Contact List Name
@@ -358,27 +421,31 @@ Outputs:
 
   ApiUrl:
     Description: Base API URL
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
     Export:
       Name: !Sub "${AWS::StackName}-ApiUrl"
 
   SubscribeEndpoint:
     Description: Subscription API endpoint
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/subscribe"
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/subscribe"
 
   ConfirmEndpoint:
     Description: Confirmation API endpoint
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/confirm"
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/confirm"
 
   UnsubscribeEndpoint:
     Description: Unsubscribe API endpoint
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/unsubscribe"
+
+  PreferencesEndpoint:
+    Description: Preferences API endpoint
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/preferences"
 
   HealthCheckEndpoint:
-      Description: Health check endpoint URL for manual or external monitoring
-      Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/health"
-      Export:
-        Name: !Sub "${AWS::StackName}-HealthCheckEndpoint"
+    Description: Health check endpoint URL
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/health"
+    Export:
+      Name: !Sub "${AWS::StackName}-HealthCheckEndpoint"
 
   AlertTopicArn:
     Description: SNS Topic for Alerts
