@@ -29,7 +29,7 @@ window.IRIDIA_CONFIG = {
      * 
      * @memberof IRIDIA_CONFIG
      * @type {string}
-     * @default 'https://your-api-endpoint.com'
+     * @default 'https://api.iridia-daily.com'
      * 
      * @example
      * // Production environment
@@ -47,7 +47,7 @@ window.IRIDIA_CONFIG = {
      * // Using environment variables (requires build tool)
      * API_URL: process.env.API_URL || 'http://localhost:3000'
      */
-    API_URL: 'https://your-api-endpoint.com',
+    API_URL: 'https://api.iridia-daily.com',
     
     /**
      * API version string.
@@ -108,8 +108,8 @@ function validateConfig() {
     // Warn if using default API URL
     if (config.API_URL === 'https://your-api-endpoint.com') {
         console.warn(
-            'IRIDIA_CONFIG: Using default API_URL. ' +
-            'Please update config.js with your actual backend endpoint.'
+            'IRIDIA_CONFIG: Using placeholder API_URL. ' +
+            'Please update config.js with your actual backend endpoint for iridia-daily.com.'
         );
     }
     

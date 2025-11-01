@@ -5,9 +5,7 @@
  * Features semantic styling, focus management, reduced motion support, and
  * high contrast modes for improved usability across all user needs.
  * 
- * @version 2.1.0
- * @license MIT
- * @author Iridia Daily Team
+ * @author Alex Howell
  */
 
 /* ==========================================================================
@@ -173,7 +171,7 @@ h3 {
     top: 0;
     z-index: 100;
     padding: var(--space-md) var(--space-sm);
-    border-bottom: 3px double var(--color-border);
+    border-bottom: 1px solid var(--color-border);
     background: rgba(254, 253, 251, 0.95);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
@@ -624,7 +622,7 @@ h3 {
 .footer {
     padding: var(--space-xl) var(--space-sm);
     background: var(--color-paper);
-    border-top: 3px double var(--color-border);
+    border-top: 1px solid var(--color-border);
     text-align: center;
 }
 
