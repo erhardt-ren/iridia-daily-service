@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+    Iridia Daily - Research Newsletter Platform
+    
+    An accessible, responsive web application for daily research paper curation.
+    Built with semantic HTML5, WCAG 2.1 AA compliant, and optimized for 
+    assistive technologies.
+    
+    @author Alex Howell
+-->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Cutting-edge scientific research delivered daily. Subscribe to get fascinating research insights from neuroscience, space, biology, and more.">
+    
+    <!-- Page Title -->
+    <title>Iridia Daily - Research Intelligence Worth Sharing</title>
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://iridia-daily.com/">
+    
+    <!-- Open Graph Meta Tags for Social Sharing -->
+    <meta property="og:title" content="Iridia Daily - Research Intelligence Worth Sharing">
+    <meta property="og:description" content="Cutting-edge scientific research delivered daily. Subscribe to get fascinating research insights from neuroscience, space, biology, and more.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://iridia-daily.com/">
+    <meta property="og:site_name" content="Iridia Daily">
+    
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Iridia Daily - Research Intelligence Worth Sharing">
+    <meta name="twitter:description" content="Cutting-edge scientific research delivered daily. Subscribe to get fascinating research insights from neuroscience, space, biology, and more.">
+    
+    <!-- Preconnect to External Resources for Performance -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- External Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Skip Navigation Link for Keyboard Users -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Site Header with Navigation -->
+    <header class="header" role="banner">
+        <div class="header-content">
+            <!-- Logo / Home Link -->
+            <a href="https://iridia-daily.com/" class="logo" aria-label="Iridia Daily - Home">Iridia Daily</a>
+            
+            <!-- Primary Subscribe Button -->
+            <button 
+                type="button" 
+                class="subscribe-btn" 
+                aria-label="Open subscription form"
+            >
+                Subscribe
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="main-content">
+        <!-- Hero Section -->
+        <section class="hero" aria-labelledby="hero-heading">
+            <h1 id="hero-heading">Research Intelligence Worth Sharing</h1>
+            <p>
+                Cutting-edge scientific research delivered daily. 
+                Subscribe to get fascinating research insights from neuroscience, space, biology, and more.
+            </p>
+            <button 
+                type="button" 
+                class="subscribe-btn" 
+                aria-label="Get started with subscription"
+            >
+                Get Started
+            </button>
+        </section>
+
+        <!-- Topic Filter Navigation -->
+        <nav class="filter-bar" aria-label="Research topic filters">
+            <div class="filter-buttons" role="group" aria-label="Filter papers by topic">
+                <button 
+                    type="button"
+                    class="filter-btn active" 
+                    data-topic="all"
+                    aria-pressed="true"
+                    aria-label="Show all topics"
+                >
+                    All Topics
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="neuroscience"
+                    aria-pressed="false"
+                    aria-label="Filter by neuroscience"
+                >
+                    Neuroscience
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="space"
+                    aria-pressed="false"
+                    aria-label="Filter by space research"
+                >
+                    Space
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="biology"
+                    aria-pressed="false"
+                    aria-label="Filter by biology"
+                >
+                    Biology
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="environment"
+                    aria-pressed="false"
+                    aria-label="Filter by environment"
+                >
+                    Environment
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="physics"
+                    aria-pressed="false"
+                    aria-label="Filter by physics"
+                >
+                    Physics
+                </button>
+                <button 
+                    type="button"
+                    class="filter-btn" 
+                    data-topic="medicine"
+                    aria-pressed="false"
+                    aria-label="Filter by medicine"
+                >
+                    Medicine
+                </button>
+            </div>
+        </nav>
+
+        <!-- Research Papers Archive -->
+        <section class="archive" aria-labelledby="archive-heading">
+            <h2 id="archive-heading" class="section-title">Recent Research</h2>
+            
+            <!-- Live Region for Dynamic Updates -->
+            <div 
+                class="archive-grid" 
+                id="archiveGrid"
+                role="region"
+                aria-live="polite"
+                aria-atomic="false"
+                aria-label="Research papers list"
+            >
+                <!-- Papers are dynamically inserted via JavaScript -->
+            </div>
+            
+            <!-- Screen Reader Status Message -->
+            <div 
+                id="filter-status" 
+                class="visually-hidden" 
+                role="status" 
+                aria-live="polite"
+                aria-atomic="true"
+            ></div>
+        </section>
+    </main>
+
+    <!-- Site Footer -->
+    <footer class="footer" role="contentinfo">
+        <div class="footer-content">
+            <div class="footer-logo" aria-hidden="true">Iridia Daily</div>
+            <p class="footer-tagline">Research Intelligence Worth Sharing</p>
+            
+            <!-- Footer Navigation -->
+            <nav class="footer-links" aria-label="Footer navigation">
+                <a href="#about">About</a>
+                <a href="#contact">Contact</a>
+                <a href="#privacy">Privacy Policy</a>
+                <a href="#terms">Terms</a>
+            </nav>
+            
+            <p class="footer-copyright">© 2025 Iridia Daily. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <!-- Subscription Modal Dialog -->
+    <div 
+        class="modal-overlay" 
+        id="modalOverlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        aria-describedby="modal-description"
+        aria-hidden="true"
+    >
+        <div class="modal">
+            <!-- Close Button -->
+            <button 
+                type="button"
+                class="close-btn" 
+                aria-label="Close subscription dialog"
+            >
+                <span aria-hidden="true">&times;</span>
+            </button>
+            
+            <!-- Modal Title -->
+            <h2 id="modal-title">Subscribe to Iridia Daily</h2>
+            
+            <!-- Modal Description -->
+            <p id="modal-description" class="modal-description">
+                Select the topics you're interested in and we'll send you fascinating research insights straight to your inbox.
+            </p>
+            
+            <!-- Subscription Form -->
+            <form id="subscribeForm" novalidate>
+                <!-- Email Field -->
+                <div class="form-group">
+                    <label for="email" class="form-label">
+                        Email Address
+                        <span aria-label="required">*</span>
+                    </label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        name="email" 
+                        class="form-input" 
+                        placeholder="you@example.com"
+                        required
+                        aria-required="true"
+                        aria-describedby="email-error"
+                        autocomplete="email"
+                    >
+                    <!-- Error Message Container -->
+                    <span id="email-error" class="error-message" role="alert" aria-live="assertive"></span>
+                </div>
+                
+                <!-- Topic Selection Fieldset -->
+                <fieldset class="form-group">
+                    <legend class="form-label">
+                        Topics of Interest 
+                        <span aria-label="required">*</span>
+                        <span class="form-hint">(select at least one)</span>
+                    </legend>
+                    
+                    <div class="topic-checkboxes" role="group" aria-describedby="topics-error">
+                        <!-- Neuroscience Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="neuroscience" 
+                                name="topics" 
+                                value="neuroscience"
+                                checked
+                                aria-describedby="neuroscience-desc"
+                            >
+                            <label for="neuroscience" class="topic-checkbox-label">
+                                Neuroscience
+                                <span id="neuroscience-desc" class="visually-hidden">Brain and nervous system research</span>
+                            </label>
+                        </div>
+                        
+                        <!-- Space Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="space" 
+                                name="topics" 
+                                value="space"
+                                checked
+                                aria-describedby="space-desc"
+                            >
+                            <label for="space" class="topic-checkbox-label">
+                                Space
+                                <span id="space-desc" class="visually-hidden">Astronomy and space exploration</span>
+                            </label>
+                        </div>
+                        
+                        <!-- Biology Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="biology" 
+                                name="topics" 
+                                value="biology"
+                                checked
+                                aria-describedby="biology-desc"
+                            >
+                            <label for="biology" class="topic-checkbox-label">
+                                Biology
+                                <span id="biology-desc" class="visually-hidden">Life sciences and biological research</span>
+                            </label>
+                        </div>
+                        
+                        <!-- Environment Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="environment" 
+                                name="topics" 
+                                value="environment"
+                                checked
+                                aria-describedby="environment-desc"
+                            >
+                            <label for="environment" class="topic-checkbox-label">
+                                Environment
+                                <span id="environment-desc" class="visually-hidden">Climate and environmental science</span>
+                            </label>
+                        </div>
+                        
+                        <!-- Physics Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="physics" 
+                                name="topics" 
+                                value="physics"
+                                checked
+                                aria-describedby="physics-desc"
+                            >
+                            <label for="physics" class="topic-checkbox-label">
+                                Physics
+                                <span id="physics-desc" class="visually-hidden">Physical sciences and quantum research</span>
+                            </label>
+                        </div>
+                        
+                        <!-- Medicine Topic -->
+                        <div class="topic-checkbox-wrapper checked">
+                            <input 
+                                type="checkbox" 
+                                id="medicine" 
+                                name="topics" 
+                                value="medicine"
+                                checked
+                                aria-describedby="medicine-desc"
+                            >
+                            <label for="medicine" class="topic-checkbox-label">
+                                Medicine
+                                <span id="medicine-desc" class="visually-hidden">Medical research and healthcare</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Topics Error Message Container -->
+                    <span id="topics-error" class="error-message" role="alert" aria-live="assertive"></span>
+                </fieldset>
+                
+                <!-- Submit Button -->
+                <button 
+                    type="submit" 
+                    class="submit-btn" 
+                    id="submitBtn"
+                    aria-label="Submit subscription"
+                >
+                    Subscribe
+                </button>
+                
+                <!-- Form Status Messages -->
+                <div 
+                    id="message" 
+                    role="status" 
+                    aria-live="polite" 
+                    aria-atomic="true"
+                ></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Configuration Script -->
+    <script src="config.js"></script>
+    
+    <!-- Main Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>

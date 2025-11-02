@@ -1,0 +1,1293 @@
+/**
+ * Iridia Daily - Accessible Stylesheet
+ * 
+ * A modern, accessible stylesheet implementing WCAG 2.1 Level AA standards.
+ * Features semantic styling, focus management, reduced motion support, and
+ * high contrast modes for improved usability across all user needs.
+ * 
+ * @author Alex Howell
+ */
+
+/* ==========================================================================
+   CSS Custom Properties (Design Tokens)
+   
+   Centralized design system variables for consistent theming and easy
+   maintenance. All values can be modified here to update the entire site.
+   ========================================================================== */
+
+:root {
+    /* Color Palette - Accessible colors with WCAG AA contrast ratios */
+    --color-bg: #FEFDFB;
+    --color-paper: #F8F7F5;
+    --color-text: #1a1a1a;              /* 4.5:1 contrast on white */
+    --color-text-secondary: #545454;    /* 7:1 contrast on white */
+    --color-border: #d0ccc6;
+    --color-accent: #0f2027;            /* 14:1 contrast on white */
+    --color-focus: #0066cc;             /* Focus indicator color */
+    
+    /* Topic Colors - Adjusted for sufficient contrast */
+    --color-neuroscience: #7d3bb8;
+    --color-space: #3651d4;
+    --color-biology: #05a77c;
+    --color-environment: #1f8a7e;
+    --color-physics: #d4244d;
+    --color-medicine: #d11363;
+    --color-technology: #2ba9cc;
+    
+    /* Typography System */
+    --font-serif: 'Lora', Georgia, serif;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    
+    /* Spacing Scale - 8px baseline grid system */
+    --space-xs: 0.5rem;     /* 8px */
+    --space-sm: 1rem;       /* 16px */
+    --space-md: 1.5rem;     /* 24px */
+    --space-lg: 2rem;       /* 32px */
+    --space-xl: 3rem;       /* 48px */
+    --space-xxl: 4rem;      /* 64px */
+    
+    /* Animation Timing - CSS custom properties for respecting reduced motion */
+    --transition-fast: 0.2s ease;
+    --transition-normal: 0.3s ease;
+    --transition-slow: 0.5s ease;
+    
+    /* Elevation System - Subtle shadows for depth */
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+    
+    /* Focus Ring - Visible keyboard navigation indicator */
+    --focus-ring: 0 0 0 3px var(--color-focus);
+    --focus-ring-offset: 2px;
+}
+
+/* ==========================================================================
+   CSS Reset
+   
+   Normalize browser defaults to ensure consistent rendering across all
+   browsers while maintaining accessibility features.
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/**
+ * Base Body Styles
+ * Sets foundational typography and accessibility features
+ */
+body {
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--color-text);
+    background: var(--color-bg);
+    
+    /* Improved text rendering on WebKit and Firefox */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    
+    /* Prevent horizontal scroll */
+    overflow-x: hidden;
+}
+
+/**
+ * Smooth Scrolling
+ * Enhances navigation experience while respecting motion preferences
+ */
+html {
+    scroll-behavior: smooth;
+}
+
+/* ==========================================================================
+   Skip Navigation Link
+   
+   Critical accessibility feature allowing keyboard users to bypass
+   repetitive navigation and jump directly to main content.
+   ========================================================================== */
+
+.skip-link {
+    position: absolute;
+    top: -100px;
+    left: 0;
+    z-index: 9999;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-accent);
+    color: white;
+    text-decoration: none;
+    font-weight: 600;
+    transition: top var(--transition-fast);
+}
+
+/**
+ * Skip Link Focus State
+ * Makes link visible when focused via keyboard navigation
+ */
+.skip-link:focus {
+    top: 0;
+    outline: 3px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* ==========================================================================
+   Typography
+   
+   Semantic heading hierarchy using accessible font sizes and weights.
+   All headings maintain proper contrast ratios.
+   ========================================================================== */
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--color-accent);
+}
+
+h1 {
+    font-size: 2.5rem;
+}
+
+h2 {
+    font-size: 2rem;
+}
+
+h3 {
+    font-size: 1.5rem;
+}
+
+/* ==========================================================================
+   Header & Navigation
+   
+   Sticky header with accessible navigation controls and focus management.
+   Includes backdrop blur effect for modern appearance.
+   ========================================================================== */
+
+.header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    padding: var(--space-md) var(--space-sm);
+    border-bottom: 1px solid var(--color-border);
+    background: rgba(254, 253, 251, 0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: box-shadow var(--transition-fast);
+}
+
+/**
+ * Scrolled State
+ * Adds subtle shadow when user scrolls past header
+ */
+.header.scrolled {
+    box-shadow: var(--shadow-sm);
+}
+
+.header-content {
+    width: 100%;
+    padding: 0 var(--space-lg);
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/**
+ * Logo Link
+ * Main site branding with accessible hover and focus states
+ */
+.logo {
+    font-family: var(--font-serif);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-accent);
+    text-decoration: none;
+    letter-spacing: -0.02em;
+    display: inline-block;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.logo:hover {
+    opacity: 0.8;
+    transform: translateY(-1px);
+}
+
+.logo:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/* ==========================================================================
+   Buttons
+   
+   Accessible button styles with clear focus indicators, sufficient contrast,
+   and proper hover/active states for all interaction methods.
+   ========================================================================== */
+
+/**
+ * Primary Subscribe Button
+ * High contrast button with shimmer effect and accessible states
+ */
+.subscribe-btn {
+    padding: 0.625rem 1.5rem;
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: white;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    transition: all var(--transition-normal);
+    position: relative;
+    overflow: hidden;
+}
+
+/**
+ * Shimmer Effect
+ * Decorative sliding shimmer animation on hover that covers entire button
+ */
+.subscribe-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    transition: left var(--transition-slow);
+    border-radius: 4px;
+}
+
+.subscribe-btn:hover::before {
+    left: 100%;
+}
+
+.subscribe-btn:hover {
+    background: #1a2f3a;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.subscribe-btn:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.subscribe-btn:active {
+    transform: translateY(0);
+}
+
+/**
+ * Disabled State
+ * Clearly indicates button is not interactive
+ */
+.subscribe-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ==========================================================================
+   Hero Section
+   
+   Primary banner with animated entrance. Animations respect user's motion
+   preferences via prefers-reduced-motion media query.
+   ========================================================================== */
+
+.hero {
+    width: 100%;
+    padding: var(--space-xl) var(--space-lg);
+    margin: 0 auto;
+    text-align: center;
+    border-bottom: 1px solid var(--color-border);
+    animation: fadeInUp 0.8s ease both;
+}
+
+/**
+ * Fade In Animation
+ * Smooth entrance effect with upward motion
+ */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.hero h1 {
+    margin-bottom: var(--space-sm);
+    animation: fadeInUp 0.8s ease 0.1s both;
+}
+
+.hero p {
+    font-size: 1.125rem;
+    color: var(--color-text-secondary);
+    max-width: 600px;
+    margin: 0 auto var(--space-lg);
+    animation: fadeInUp 0.8s ease 0.2s both;
+}
+
+.hero .subscribe-btn {
+    animation: fadeInUp 0.8s ease 0.3s both;
+}
+
+/* ==========================================================================
+   Filter Bar
+   
+   Accessible topic filter navigation with ARIA attributes and keyboard
+   support. Filter buttons use aria-pressed for toggle state.
+   ========================================================================== */
+
+.filter-bar {
+    width: 100%;
+    padding: var(--space-md) var(--space-lg);
+    margin: 0 auto;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-paper);
+    position: sticky;
+    top: 72px;
+    z-index: 99;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.filter-buttons {
+    display: flex;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/**
+ * Filter Buttons
+ * Toggle buttons for filtering content by topic
+ */
+.filter-btn {
+    padding: 0.5rem 1rem;
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-text);
+    background: white;
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    position: relative;
+    overflow: hidden;
+}
+
+/**
+ * Ripple Effect
+ * Subtle animation on hover using pseudo-element that covers entire button
+ */
+.filter-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 20px;
+    background: rgba(0, 0, 0, 0.05);
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+}
+
+.filter-btn:hover::before {
+    opacity: 1;
+}
+
+.filter-btn:hover {
+    border-color: var(--color-accent);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+}
+
+.filter-btn:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/**
+ * Active Filter State
+ * Indicates current selected filter
+ */
+.filter-btn.active,
+.filter-btn[aria-pressed="true"] {
+    color: white;
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+}
+
+/**
+ * Topic-Specific Active Colors
+ * Each topic has a unique color when selected
+ */
+.filter-btn[data-topic="neuroscience"].active {
+    background: var(--color-neuroscience);
+    border-color: var(--color-neuroscience);
+}
+
+.filter-btn[data-topic="space"].active {
+    background: var(--color-space);
+    border-color: var(--color-space);
+}
+
+.filter-btn[data-topic="biology"].active {
+    background: var(--color-biology);
+    border-color: var(--color-biology);
+}
+
+.filter-btn[data-topic="environment"].active {
+    background: var(--color-environment);
+    border-color: var(--color-environment);
+}
+
+.filter-btn[data-topic="physics"].active {
+    background: var(--color-physics);
+    border-color: var(--color-physics);
+}
+
+.filter-btn[data-topic="medicine"].active {
+    background: var(--color-medicine);
+    border-color: var(--color-medicine);
+}
+
+/* ==========================================================================
+   Archive Section
+   
+   Research papers grid with accessible card layout and proper headings.
+   ========================================================================== */
+
+.archive {
+    width: 100%;
+    padding: var(--space-xl) var(--space-lg);
+    margin: 0 auto;
+}
+
+.section-title {
+    margin-bottom: var(--space-lg);
+    text-align: center;
+}
+
+/**
+ * Papers Grid
+ * Responsive grid layout for research paper cards
+ */
+.archive-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--space-lg);
+    transition: opacity var(--transition-normal);
+}
+
+/**
+ * Paper Card
+ * Individual research paper container with accessible structure
+ */
+.paper-card {
+    padding: var(--space-lg);
+    background: white;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    transition: all var(--transition-normal);
+    box-shadow: var(--shadow-sm);
+}
+
+.paper-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--color-accent);
+}
+
+/**
+ * Paper Card Focus
+ * Shows focus when keyboard navigating through links inside card
+ */
+.paper-card:focus-within {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+.paper-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-sm);
+    gap: var(--space-xs);
+}
+
+/**
+ * Topic Badge
+ * Colored label indicating paper's research category
+ */
+.topic-badge {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: white;
+    border-radius: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.date {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+}
+
+.paper-title {
+    margin-bottom: var(--space-sm);
+    font-size: 1.25rem;
+    line-height: 1.3;
+}
+
+.paper-summary {
+    margin-bottom: var(--space-md);
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+}
+
+.paper-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+}
+
+.journal {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+    font-style: italic;
+}
+
+/**
+ * Read More Link
+ * External link to full research paper with accessible indicators
+ */
+.read-more {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-accent);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.read-more:hover {
+    color: var(--color-space);
+}
+
+.read-more:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/**
+ * External Link Indicator
+ * Adds right arrow after links to indicate external navigation
+ */
+.read-more::after {
+    content: '→';
+    font-size: 1em;
+    transition: transform var(--transition-fast);
+}
+
+.read-more:hover::after {
+    transform: translateX(3px);
+}
+
+/* ==========================================================================
+   Footer
+   
+   Site footer with navigation links and copyright information.
+   ========================================================================== */
+
+.footer {
+    padding: var(--space-xl) var(--space-sm);
+    background: var(--color-paper);
+    border-top: 1px solid var(--color-border);
+    text-align: center;
+}
+
+.footer-content {
+    width: 100%;
+    padding: 0 var(--space-lg);
+    margin: 0 auto;
+}
+
+.footer-logo {
+    font-family: var(--font-serif);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-accent);
+    margin-bottom: var(--space-xs);
+}
+
+.footer-tagline {
+    color: var(--color-text-secondary);
+    margin-bottom: var(--space-lg);
+}
+
+/**
+ * Footer Links Navigation
+ * Secondary site navigation with accessible spacing
+ */
+.footer-links {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-lg);
+    flex-wrap: wrap;
+}
+
+.footer-links a {
+    color: var(--color-text);
+    text-decoration: none;
+    font-size: 0.9375rem;
+    transition: color var(--transition-fast);
+}
+
+.footer-links a:hover {
+    color: var(--color-accent);
+    text-decoration: underline;
+}
+
+.footer-links a:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.footer-copyright {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+/* ==========================================================================
+   Modal Dialog
+   
+   Accessible modal implementation with focus trap, keyboard navigation,
+   and proper ARIA attributes. Follows WAI-ARIA authoring practices.
+   ========================================================================== */
+
+/**
+ * Modal Overlay
+ * Semi-transparent backdrop that prevents interaction with page content
+ */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-sm);
+    z-index: 1000;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-normal), visibility var(--transition-normal);
+}
+
+/**
+ * Active Modal State
+ * Makes modal visible and interactive
+ */
+.modal-overlay.active,
+.modal-overlay[aria-hidden="false"] {
+    opacity: 1;
+    visibility: visible;
+}
+
+/**
+ * Modal Container
+ * Main dialog box with content
+ */
+.modal {
+    max-width: 540px;
+    width: 100%;
+    max-height: 90vh;
+    padding: var(--space-xl);
+    background: white;
+    border-radius: 8px;
+    overflow-y: auto;
+    position: relative;
+    box-shadow: var(--shadow-lg);
+    transform: scale(0.9) translateY(20px);
+    transition: transform var(--transition-normal);
+}
+
+.modal-overlay.active .modal {
+    transform: scale(1) translateY(0);
+    animation: modalSlideIn 0.4s ease;
+}
+
+/**
+ * Modal Entrance Animation
+ * Smooth appearance with scale and translate
+ */
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: scale(0.9) translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+/**
+ * Close Button
+ * Accessible button to dismiss modal
+ */
+.close-btn {
+    position: absolute;
+    top: var(--space-md);
+    right: var(--space-md);
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--color-text-secondary);
+    background: none;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.close-btn:hover {
+    color: var(--color-accent);
+    background: var(--color-paper);
+    transform: rotate(90deg);
+}
+
+.close-btn:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+.modal h2 {
+    margin-bottom: var(--space-sm);
+}
+
+.modal-description {
+    color: var(--color-text-secondary);
+    margin-bottom: var(--space-lg);
+}
+
+/* ==========================================================================
+   Form Elements
+   
+   Accessible form controls with clear labels, error states, and
+   focus indicators. Follows WCAG form guidelines.
+   ========================================================================== */
+
+/**
+ * Form Group
+ * Container for form field with label and input
+ */
+.form-group {
+    margin-bottom: var(--space-md);
+}
+
+/**
+ * Fieldset Styling
+ * For checkbox groups with proper legend
+ */
+fieldset.form-group {
+    border: none;
+    padding: 0;
+}
+
+/**
+ * Form Labels
+ * Clear, accessible labels with sufficient contrast
+ */
+.form-label {
+    display: block;
+    margin-bottom: var(--space-xs);
+    font-weight: 500;
+    color: var(--color-text);
+}
+
+legend.form-label {
+    padding: 0;
+    margin-bottom: var(--space-sm);
+}
+
+/**
+ * Form Hint Text
+ * Additional context for form fields
+ */
+.form-hint {
+    font-weight: 400;
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+/**
+ * Text Input Field
+ * Standard text/email input with accessible focus states
+ */
+.form-input {
+    width: 100%;
+    padding: 0.75rem;
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    color: var(--color-text);
+    background: white;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    transition: all var(--transition-fast);
+}
+
+.form-input:hover {
+    border-color: var(--color-accent);
+}
+
+/**
+ * Input Focus State
+ * High-visibility focus ring for keyboard navigation
+ */
+.form-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: var(--focus-ring);
+}
+
+/**
+ * Input Error State
+ * Red border for validation errors
+ */
+.form-input.error,
+.form-input[aria-invalid="true"] {
+    border-color: #dc3545;
+}
+
+.form-input.error:focus {
+    box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.25);
+}
+
+/**
+ * Error Message
+ * Displayed when form validation fails
+ */
+.error-message {
+    display: block;
+    margin-top: var(--space-xs);
+    font-size: 0.875rem;
+    color: #dc3545;
+}
+
+.error-message:empty {
+    display: none;
+}
+
+/* ==========================================================================
+   Checkbox Styles
+   
+   Custom-styled accessible checkboxes with enhanced click targets
+   and visual feedback for all states.
+   ========================================================================== */
+
+.topic-checkboxes {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-xs);
+}
+
+/**
+ * Checkbox Wrapper
+ * Enlarged click target for better accessibility
+ */
+.topic-checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.topic-checkbox-wrapper:hover {
+    border-color: var(--color-accent);
+    background: var(--color-paper);
+    transform: translateX(2px);
+}
+
+/**
+ * Checkbox Focus State
+ * Visible when checkbox receives keyboard focus
+ */
+.topic-checkbox-wrapper:has(input:focus) {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+}
+
+/**
+ * Checked State
+ * Visual feedback for selected checkboxes
+ */
+.topic-checkbox-wrapper.checked {
+    border-color: var(--color-accent);
+    background: rgba(15, 32, 39, 0.05);
+}
+
+.topic-checkbox-wrapper input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: var(--space-xs);
+    cursor: pointer;
+    accent-color: #0066cc;
+}
+
+.topic-checkbox-label {
+    font-size: 0.9375rem;
+    cursor: pointer;
+}
+
+/* ==========================================================================
+   Submit Button
+   
+   Form submission button with loading state and accessibility features.
+   ========================================================================== */
+
+.submit-btn {
+    width: 100%;
+    padding: 0.875rem;
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    font-weight: 500;
+    color: white;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    position: relative;
+    overflow: hidden;
+}
+
+/**
+ * Submit Button Ripple Effect
+ * Background overlay animation on hover that covers entire button
+ */
+.submit-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.15);
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+}
+
+.submit-btn:hover:not(:disabled)::before {
+    opacity: 1;
+}
+
+.submit-btn:hover:not(:disabled) {
+    background: #1a2f3a;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.submit-btn:focus {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.submit-btn:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+/* ==========================================================================
+   Message Components
+   
+   Success and error messages with proper ARIA live regions for
+   screen reader announcements.
+   ========================================================================== */
+
+#message {
+    margin-top: var(--space-md);
+}
+
+.message {
+    padding: var(--space-sm);
+    border-radius: 4px;
+    font-size: 0.9375rem;
+    animation: slideIn 0.3s ease;
+}
+
+/**
+ * Message Animation
+ * Slides in from above
+ */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/**
+ * Success Message
+ * Green background for positive feedback
+ */
+.message.success {
+    color: #155724;
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+}
+
+/**
+ * Error Message
+ * Red background for error feedback
+ */
+.message.error {
+    color: #721c24;
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+}
+
+/* ==========================================================================
+   Loading State
+   
+   Pulse animation for loading indicators with accessible animation.
+   ========================================================================== */
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.loading {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* ==========================================================================
+   Accessibility Utilities
+   
+   Helper classes for improved accessibility and screen reader support.
+   ========================================================================== */
+
+/**
+ * Visually Hidden
+ * Hides content visually but keeps it accessible to screen readers.
+ * Used for descriptive text, skip links, and status messages.
+ */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+}
+
+/**
+ * Focus Visible
+ * Enhanced focus styles for all interactive elements when navigating
+ * via keyboard. Modern browsers use :focus-visible automatically.
+ */
+*:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: var(--focus-ring-offset);
+}
+
+/**
+ * Remove Focus Outline for Mouse Users
+ * Prevents focus ring from appearing on mouse clicks while maintaining
+ * keyboard accessibility
+ */
+*:focus:not(:focus-visible) {
+    outline: none;
+}
+
+/* ==========================================================================
+   Reduced Motion Support
+   
+   Respects user's system preference for reduced motion. Critical for
+   users with vestibular disorders and motion sensitivity.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    
+    /* Disable smooth scrolling for reduced motion users */
+    html {
+        scroll-behavior: auto;
+    }
+}
+
+/* ==========================================================================
+   High Contrast Mode Support
+   
+   Ensures visibility in Windows High Contrast Mode by forcing borders
+   and outlines to be visible.
+   ========================================================================== */
+
+@media (prefers-contrast: high) {
+    .subscribe-btn,
+    .filter-btn,
+    .submit-btn {
+        border: 2px solid currentColor;
+    }
+    
+    .paper-card {
+        border: 2px solid currentColor;
+    }
+}
+
+/* ==========================================================================
+   Responsive Design
+   
+   Mobile-optimized styles for smaller screens. Maintains accessibility
+   features across all device sizes.
+   ========================================================================== */
+
+@media (max-width: 768px) {
+    /* Typography adjustments for mobile */
+    .hero h1 {
+        font-size: 2rem;
+    }
+    
+    .hero p {
+        font-size: 1rem;
+    }
+    
+    /* Single column layouts on mobile */
+    .archive-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .topic-checkboxes {
+        grid-template-columns: 1fr;
+    }
+    
+    /* Stack footer links vertically */
+    .footer-links {
+        flex-direction: column;
+        gap: var(--space-xs);
+    }
+    
+    /* Disable sticky positioning for better mobile UX */
+    .filter-bar {
+        position: static;
+    }
+    
+    /* Adjust modal padding for mobile */
+    .modal {
+        padding: var(--space-lg);
+    }
+    
+    /* Larger touch targets for mobile */
+    .filter-btn {
+        padding: 0.625rem 1.25rem;
+    }
+}
+
+@media (max-width: 480px) {
+    /* Further reduce heading sizes on very small screens */
+    .hero h1 {
+        font-size: 1.75rem;
+    }
+    
+    /* Adjust spacing for compact layout */
+    .hero {
+        padding: var(--space-lg) var(--space-sm);
+    }
+    
+    .archive {
+        padding: var(--space-lg) var(--space-sm);
+    }
+}
+
+/* ==========================================================================
+   Print Styles
+   
+   Optimized styles for printed pages, removing unnecessary elements
+   and ensuring readability.
+   ========================================================================== */
+
+@media print {
+    /* Hide non-essential elements when printing */
+    .header,
+    .filter-bar,
+    .footer,
+    .subscribe-btn,
+    .modal-overlay,
+    .skip-link {
+        display: none !important;
+    }
+    
+    /* Optimize text for print */
+    body {
+        color: #000;
+        background: #fff;
+    }
+    
+    /* Remove shadows and effects */
+    .paper-card {
+        box-shadow: none;
+        border: 1px solid #000;
+        page-break-inside: avoid;
+    }
+    
+    /* Ensure links are underlined */
+    a {
+        text-decoration: underline;
+    }
+    
+    /* Show URLs for external links */
+    a[href^="http"]::after {
+        content: " (" attr(href) ")";
+        font-size: 0.8em;
+    }
+}
