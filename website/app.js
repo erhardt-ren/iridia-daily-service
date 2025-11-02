@@ -1,16 +1,8 @@
 /**
- * Iridia Daily - Accessible Application Script
+ * Iridia Daily - Application Script
  * 
- * Handles client-side interactions with full WCAG 2.1 AA compliance including:
- * - Focus management and keyboard navigation
- * - ARIA live region announcements
- * - Modal focus trapping
- * - Form validation with accessible error messages
- * - Reduced motion support
  * 
- * @version 2.1.0
- * @license MIT
- * @author Iridia Daily Team
+ * @author Alex Howell
  */
 
 'use strict';

@@ -7,9 +7,7 @@
  * This configuration is loaded before the main application script and
  * provides essential settings needed for API communication.
  * 
- * @version 2.1.0
- * @license MIT
- * @author Iridia Daily Team
+ * @author Alex Howell
  */
 
 /**
