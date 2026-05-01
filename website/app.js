@@ -1,240 +1,735 @@
 /**
  * Iridia Daily - Application Script
  * 
- * 
  * @author Alex Howell
  */
 
 'use strict';
 
-/* ==========================================================================
-   Configuration
-   ========================================================================== */
-
-/**
- * API base URL loaded from external configuration file.
- * Allows environment-specific configuration without code changes.
- * 
- * @type {string}
- * @constant
- */
 const API_BASE_URL = window.IRIDIA_CONFIG?.API_URL || 'https://your-api-endpoint.com';
 
-/* ==========================================================================
-   Data
-   ========================================================================== */
+// State management
+let allPapers = []; // Deprecated - kept for backward compatibility
+let currentFilter = 'all';
+let currentSearch = '';
+let currentSort = 'date_desc';
+let currentPerPage = 10; // Default display count
+let currentPage = 1; // Current page number
+let totalPages = 1; // Total pages reported by server
+let isLastPage = false; // True when server reports no next page
 
-/**
- * Sample research papers for demonstration.
- * In production, this data would be fetched from an API endpoint.
- * 
- * @typedef {Object} ResearchPaper
- * @property {string} topic - Research category
- * @property {string} date - Publication date
- * @property {string} title - Paper title
- * @property {string} summary - Brief description
- * @property {string} journal - Publishing journal
- * @property {string} url - Link to full paper
- * 
- * @type {ResearchPaper[]}
- * @constant
- */
-const samplePapers = [
-    {
-        topic: 'neuroscience',
-        date: 'Oct 26, 2024',
-        title: 'Neural mechanisms of memory consolidation during sleep',
-        summary: 'Researchers discovered that specific neural pathways activate during deep sleep to strengthen memories formed during waking hours, providing new insights into learning processes.',
-        journal: 'Nature Neuroscience',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/12345678/'
-    },
-    {
-        topic: 'space',
-        date: 'Oct 25, 2024',
-        title: 'Earth-like exoplanet discovered in habitable zone',
-        summary: 'Astronomers identified a potentially habitable planet orbiting a nearby star, showing signs of atmospheric water vapor and temperatures suitable for liquid water.',
-        journal: 'The Astrophysical Journal',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/87654321/'
-    },
-    {
-        topic: 'biology',
-        date: 'Oct 24, 2024',
-        title: 'CRISPR breakthrough enables precise gene therapy',
-        summary: 'Scientists developed a new CRISPR variant with unprecedented accuracy, successfully treating sickle cell disease in clinical trials with minimal off-target effects.',
-        journal: 'New England Journal of Medicine',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/11223344/'
-    },
-    {
-        topic: 'physics',
-        date: 'Oct 23, 2024',
-        title: 'Quantum entanglement maintained at room temperature',
-        summary: 'Physicists achieved stable quantum entanglement without cryogenic cooling, potentially revolutionizing practical quantum computing applications.',
-        journal: 'Physical Review Letters',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/44556677/'
-    },
-    {
-        topic: 'environment',
-        date: 'Oct 22, 2024',
-        title: 'Ocean ecosystems show unexpected climate resilience',
-        summary: 'Long-term study reveals marine life adapting through novel symbiotic relationships, offering hope for conservation strategies in warming seas.',
-        journal: 'Science',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/99887766/'
-    },
-    {
-        topic: 'medicine',
-        date: 'Oct 21, 2024',
-        title: 'mRNA vaccine shows promise against multiple cancers',
-        summary: 'Phase II trials demonstrate personalized mRNA vaccines can train immune systems to recognize and attack various tumor types with minimal side effects.',
-        journal: 'The Lancet',
-        url: 'https://pubmed.ncbi.nlm.nih.gov/55443322/'
-    }
-];
+// Page cache for pre-fetching
+let pageCache = new Map(); // Map<pageNumber, {papers, pagination, timestamp}>
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache lifetime
+let prefetchInProgress = new Set(); // Track ongoing prefetch requests
+let currentLoadId = 0; // Incremented on every foreground load; stale responses check against it
 
-/**
- * Topic color mapping for consistent UI theming.
- * Colors are WCAG AA compliant for accessibility.
- * 
- * @type {Object.<string, string>}
- * @constant
- */
-const topicColors = {
-    'neuroscience': '#7d3bb8',
-    'space': '#3651d4',
-    'biology': '#05a77c',
-    'environment': '#1f8a7e',
-    'physics': '#d4244d',
-    'medicine': '#d11363',
-    'technology': '#2ba9cc'
+let isLoading = false;
+let stats = {
+    papers_examined: 0,
+    papers_returned: 0,
+    files_processed: 0
 };
 
-/* ==========================================================================
-   State Management
-   ========================================================================== */
+const topicColors = {
+    neuroscience: '#0ea5e9',
+    space: '#8b5cf6',
+    biology: '#10b981',
+    environment: '#3b82f6',
+    physics: '#f59e0b',
+    medicine: '#eab308',
+    technology: '#ec4899',
+    chemistry: '#a855f7',
+    default: '#6b7280'
+};
 
-/**
- * Current active topic filter.
- * 
- * @type {string}
- */
-let currentFilter = 'all';
-
-/**
- * Array of focusable elements within the modal for focus trapping.
- * 
- * @type {HTMLElement[]}
- */
 let focusableElements = [];
-
-/**
- * Element that had focus before modal opened.
- * Used to restore focus when modal closes.
- * 
- * @type {HTMLElement|null}
- */
 let lastFocusedElement = null;
+let searchDebounceTimer = null;
 
-/* ==========================================================================
-   Initialization
-   ========================================================================== */
-
-/**
- * Initialize application when DOM is fully loaded.
- * Sets up all event listeners and renders initial content.
- * 
- * @returns {void}
- */
 document.addEventListener('DOMContentLoaded', () => {
-    renderPapers();
+    loadPage(1); // Load first page
     setupEventListeners();
     setupCheckboxes();
     setupScrollEffects();
     setupKeyboardNav();
-    announcePageLoad();
+    setupSearchBar();
+    setupPagination();
+    setupPreviewCard();
 });
 
-/* ==========================================================================
-   Event Listeners Setup
-   ========================================================================== */
+/**
+ * Setup pagination components (top and bottom)
+ */
+function setupPagination() {
+    createPaginationComponents();
+}
 
 /**
- * Set up all event listeners for interactive elements.
- * Uses event delegation where appropriate for better performance.
- * 
- * @returns {void}
+ * Create pagination components at top and bottom of archive grid
+ */
+function createPaginationComponents() {
+    const archiveGrid = document.getElementById('archiveGrid');
+    if (!archiveGrid) return;
+    
+    // Create top pagination - insert into search container
+    if (!document.getElementById('paginationTop')) {
+        const searchContainer = document.querySelector('.search-container');
+        if (searchContainer) {
+            const topPagination = createPaginationElement('paginationTop');
+            searchContainer.appendChild(topPagination);
+        }
+    }
+    
+    // Create bottom pagination
+    if (!document.getElementById('paginationBottom')) {
+        const bottomPagination = createPaginationElement('paginationBottom');
+        archiveGrid.parentNode.insertBefore(bottomPagination, archiveGrid.nextSibling);
+    }
+    
+    updatePaginationDisplay();
+}
+
+/**
+ * Create a pagination element
+ */
+function createPaginationElement(id) {
+    const container = document.createElement('div');
+    container.id = id;
+    container.className = 'pagination-container';
+    container.setAttribute('role', 'navigation');
+    container.setAttribute('aria-label', 'Pagination');
+    
+    // Info section (showing X papers)
+    const info = document.createElement('div');
+    info.className = 'pagination-info';
+    info.setAttribute('aria-live', 'polite');
+    container.appendChild(info);
+    
+    // Page controls section
+    const controls = document.createElement('div');
+    controls.className = 'pagination-controls';
+    controls.setAttribute('role', 'group');
+    controls.setAttribute('aria-label', 'Page navigation');
+    container.appendChild(controls);
+    
+    // Per-page selector section
+    const perPageWrapper = document.createElement('div');
+    perPageWrapper.className = 'per-page-selector-wrapper';
+    
+    const label = document.createElement('label');
+    label.htmlFor = `perPageSelector-${id}`;
+    label.textContent = 'Per page:';
+    
+    const selector = document.createElement('select');
+    selector.id = `perPageSelector-${id}`;
+    selector.className = 'per-page-selector';
+    selector.setAttribute('aria-label', 'Papers per page');
+    
+    [10, 25, 50].forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        option.selected = value === currentPerPage;
+        selector.appendChild(option);
+    });
+    
+    selector.addEventListener('change', (e) => {
+        currentPerPage = parseInt(e.target.value);
+        // Update both selectors
+        document.querySelectorAll('.per-page-selector').forEach(sel => {
+            sel.value = currentPerPage;
+        });
+        resetAndReload(); // Reload from page 1 with new page size
+    });
+    
+    perPageWrapper.appendChild(label);
+    perPageWrapper.appendChild(selector);
+    container.appendChild(perPageWrapper);
+    
+    return container;
+}
+
+/**
+ * Update pagination display for server-side pagination
+ */
+function updatePaginationDisplay() {
+    const maxVisiblePage = totalPages;
+    
+    // Update both pagination components
+    ['paginationTop', 'paginationBottom'].forEach(id => {
+        const container = document.getElementById(id);
+        if (!container) return;
+        
+        // Update info
+        const info = container.querySelector('.pagination-info');
+        if (info) {
+            const cached = pageCache.get(currentPage);
+            if (cached && cached.papers) {
+                const count = cached.papers.length;
+                info.textContent = `Page ${currentPage} of ${totalPages} • ${count} ${count === 1 ? 'paper' : 'papers'}`;
+            } else {
+                info.textContent = `Page ${currentPage} of ${totalPages}`;
+            }
+        }
+        
+        // Update controls
+        const controls = container.querySelector('.pagination-controls');
+        if (controls) {
+            controls.innerHTML = '';
+            
+            // Previous button
+            const prevBtn = document.createElement('button');
+            prevBtn.className = 'pagination-btn';
+            prevBtn.innerHTML = '&laquo;';
+            prevBtn.setAttribute('aria-label', 'Previous page');
+            prevBtn.disabled = currentPage === 1;
+            prevBtn.addEventListener('click', () => {
+                if (currentPage > 1) {
+                    loadPage(currentPage - 1);
+                }
+            });
+            // Prefetch previous page on hover
+            prevBtn.addEventListener('mouseenter', () => {
+                if (currentPage > 1) {
+                    prefetchPage(currentPage - 1);
+                }
+            });
+            controls.appendChild(prevBtn);
+            
+            // Page numbers - show only pages we know exist
+            const pages = getVisiblePageNumbers(currentPage, maxVisiblePage);
+            pages.forEach(page => {
+                if (page === '...') {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.className = 'pagination-ellipsis';
+                    ellipsis.textContent = '...';
+                    controls.appendChild(ellipsis);
+                } else {
+                    const pageBtn = document.createElement('button');
+                    pageBtn.className = 'pagination-btn';
+                    if (page === currentPage) {
+                        pageBtn.classList.add('active');
+                        pageBtn.setAttribute('aria-current', 'page');
+                    }
+                    pageBtn.textContent = page;
+                    pageBtn.setAttribute('aria-label', `Page ${page}`);
+                    
+                    // Click handler
+                    pageBtn.addEventListener('click', () => {
+                        loadPage(page);
+                    });
+                    
+                    // Hover to prefetch
+                    pageBtn.addEventListener('mouseenter', () => {
+                        prefetchPage(page);
+                    });
+                    
+                    controls.appendChild(pageBtn);
+                }
+            });
+            
+            // Next button
+            const nextBtn = document.createElement('button');
+            nextBtn.className = 'pagination-btn';
+            nextBtn.innerHTML = '&raquo;';
+            nextBtn.setAttribute('aria-label', 'Next page');
+            nextBtn.disabled = isLastPage;
+            nextBtn.addEventListener('click', () => {
+                if (!isLastPage) {
+                    loadPage(currentPage + 1);
+                }
+            });
+            // Prefetch next page on hover
+            nextBtn.addEventListener('mouseenter', () => {
+                if (!isLastPage) {
+                    prefetchPage(currentPage + 1);
+                }
+            });
+            controls.appendChild(nextBtn);
+        }
+    });
+}
+
+/**
+ * Get visible page numbers for pagination display
+ */
+function getVisiblePageNumbers(current, maxPage) {
+    const pages = [];
+    const delta = 2; // Number of pages to show on each side of current
+    
+    // Always show page 1
+    pages.push(1);
+    
+    if (maxPage === 1) {
+        return pages;
+    }
+    
+    // Calculate range around current page
+    const start = Math.max(2, current - delta);
+    const end = Math.min(maxPage, current + delta);
+    
+    // Add ellipsis after first page if needed
+    if (start > 2) {
+        pages.push('...');
+    }
+    
+    // Add pages around current
+    for (let i = start; i <= end; i++) {
+        pages.push(i);
+    }
+    
+    // Add ellipsis before last if needed
+    if (end < maxPage - 1) {
+        pages.push('...');
+    }
+    
+    // Show the max page if it's not already shown
+    if (maxPage > 1 && end < maxPage) {
+        pages.push(maxPage);
+    }
+    
+    return pages;
+}
+
+/**
+ * Scroll to top of archive section
+ */
+function scrollToTop() {
+    const archive = document.querySelector('.archive');
+    if (archive) {
+        const headerHeight = document.querySelector('.header')?.offsetHeight || 0;
+        const filterHeight = document.querySelector('.filter-bar')?.offsetHeight || 0;
+        const offset = headerHeight + filterHeight + 20;
+        const targetPosition = archive.offsetTop - offset;
+        
+        window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+        });
+    }
+}
+
+/**
+ * Setup search bar functionality
+ */
+function setupSearchBar() {
+    const searchInput = document.getElementById('searchInput');
+    if (!searchInput) {
+        // Create search bar if it doesn't exist
+        createSearchBar();
+        return;
+    }
+    
+    searchInput.addEventListener('input', (e) => {
+        const query = e.target.value.trim();
+        
+        // Debounce search to avoid too many API calls
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+            if (query !== currentSearch) {
+                currentSearch = query;
+                resetAndReload();
+            }
+        }, 500); // Wait 500ms after user stops typing
+    });
+    
+    // Clear button
+    const clearBtn = document.getElementById('clearSearch');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            currentSearch = '';
+            clearBtn.style.display = 'none';
+            resetAndReload();
+        });
+    }
+    
+    // Show/hide clear button
+    searchInput.addEventListener('input', (e) => {
+        const clearBtn = document.getElementById('clearSearch');
+        if (clearBtn) {
+            clearBtn.style.display = e.target.value ? 'block' : 'none';
+        }
+    });
+}
+
+/**
+ * Create search bar UI element
+ */
+function createSearchBar() {
+    const filterBar = document.querySelector('.filter-bar');
+    if (!filterBar) return;
+    
+    const searchContainer = document.createElement('div');
+    searchContainer.className = 'search-container';
+    
+    const searchWrapper = document.createElement('div');
+    searchWrapper.className = 'search-wrapper';
+    
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.id = 'searchInput';
+    searchInput.className = 'search-input';
+    searchInput.placeholder = 'Search papers by title, summary, or journal...';
+    searchInput.setAttribute('aria-label', 'Search research papers');
+    
+    const searchIcon = document.createElement('i');
+    searchIcon.className = 'fas fa-search';
+    searchIcon.style.cssText = `
+        position: absolute;
+        left: 15px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #6b7280;
+        pointer-events: none;
+    `;
+    
+    const clearBtn = document.createElement('button');
+    clearBtn.id = 'clearSearch';
+    clearBtn.className = 'clear-search-btn';
+    clearBtn.innerHTML = '<i class="fas fa-times"></i>';
+    clearBtn.setAttribute('aria-label', 'Clear search');
+    clearBtn.style.display = 'none';
+    
+    clearBtn.addEventListener('mouseenter', () => {
+        clearBtn.style.color = '#ef4444';
+    });
+    
+    clearBtn.addEventListener('mouseleave', () => {
+        clearBtn.style.color = '#6b7280';
+    });
+    
+    searchWrapper.appendChild(searchIcon);
+    searchWrapper.appendChild(searchInput);
+    searchWrapper.appendChild(clearBtn);
+    searchContainer.appendChild(searchWrapper);
+    
+    filterBar.parentNode.insertBefore(searchContainer, filterBar.nextSibling);
+    
+    // Setup event listeners
+    setupSearchBar();
+}
+
+/**
+ * Reset state and reload from beginning
+ */
+function resetAndReload() {
+    pageCache.clear();
+    prefetchInProgress.clear();
+    currentPage = 1;
+    totalPages = 1;
+    isLastPage = false;
+    loadPage(1);
+}
+
+/**
+ * Load a specific page of papers
+ * @param {number} pageNumber - Page number to load (1-indexed)
+ * @param {boolean} isBackground - Whether this is a background prefetch
+ */
+async function loadPage(pageNumber, isBackground = false) {
+    // Cache hit — restore full state from cached entry
+    const cached = pageCache.get(pageNumber);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+        if (!isBackground) {
+            currentPage = pageNumber;
+            totalPages = cached.pagination.total_pages || totalPages;
+            isLastPage = cached.isLastPage;
+            renderPageFromCache(cached);
+            updatePaginationDisplay();
+            updateStatsDisplay();
+        }
+        return;
+    }
+
+    if (isBackground) {
+        prefetchInProgress.add(pageNumber);
+    } else {
+        // Update page state and show skeleton immediately so the UI
+        // reflects the navigation intent before the fetch resolves
+        currentPage = pageNumber;
+        isLoading = true;
+        showSkeletonCards(currentPerPage);
+        updatePaginationDisplay();
+    }
+
+    const myLoadId = ++currentLoadId;
+
+    try {
+        const offset = (pageNumber - 1) * currentPerPage;
+        const result = await fetchPapersFromServer(currentPerPage, offset);
+
+        // A newer foreground load started while this one was in flight — discard.
+        if (!isBackground && myLoadId !== currentLoadId) return;
+
+        const isThisLastPage = !result.pagination.has_next_page;
+
+        pageCache.set(pageNumber, {
+            papers: result.papers,
+            pagination: result.pagination,
+            filters: result.filters,
+            timestamp: Date.now(),
+            isLastPage: isThisLastPage
+        });
+
+        // totalPages is consistent across all pages for the same query,
+        // so background prefetches can safely update it.
+        // isLastPage is current-page state — only the foreground fetch owns it.
+        totalPages = result.pagination.total_pages || 1;
+
+        if (!isBackground) {
+            isLoading = false;
+            isLastPage = isThisLastPage;
+            renderPageFromCache(pageCache.get(pageNumber));
+            updatePaginationDisplay();
+            updateStatsDisplay();
+        }
+
+    } catch (error) {
+        console.error('Error loading page:', error);
+        if (!isBackground && myLoadId === currentLoadId) {
+            isLoading = false;
+            showTemporaryNotification('Failed to load page. Please try again.', 'error');
+        }
+    } finally {
+        if (isBackground) {
+            prefetchInProgress.delete(pageNumber);
+        }
+    }
+}
+
+/**
+ * Render skeleton placeholder cards while a page fetch is in progress
+ * @param {number} count - Number of skeleton cards to show
+ */
+function showSkeletonCards(count) {
+    const grid = document.getElementById('archiveGrid');
+    if (!grid) return;
+
+    // Always make skeleton visible — previous render may have left opacity at 0.
+    grid.style.transition = 'none';
+    grid.style.opacity = '1';
+
+    grid.innerHTML = Array.from({ length: count }, () => `
+        <article class="paper-card skeleton" aria-hidden="true">
+            <div class="paper-header">
+                <span class="skeleton-block skeleton-badge"></span>
+                <span class="skeleton-block skeleton-date"></span>
+            </div>
+            <div class="skeleton-block skeleton-title"></div>
+            <div class="skeleton-block skeleton-text"></div>
+            <div class="skeleton-block skeleton-text short"></div>
+            <div class="paper-footer">
+                <span class="skeleton-block skeleton-journal"></span>
+            </div>
+        </article>
+    `).join('');
+}
+
+/**
+ * Render papers from cached page data
+ */
+function renderPageFromCache(cachedPage) {
+    const grid = document.getElementById('archiveGrid');
+    if (!grid) return;
+    
+    const papers = cachedPage.papers;
+    
+    // Announce change for screen readers
+    announceFilterChange(papers.length, currentFilter);
+
+    if (papers.length === 0) {
+        let message = 'No papers found.';
+
+        if (currentSearch) {
+            message = `No papers found matching "${currentSearch}".`;
+        } else if (currentFilter !== 'all') {
+            message = `No ${currentFilter} papers found.`;
+        }
+
+        grid.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-search" aria-hidden="true"></i>
+                <p>${message}</p>
+            </div>
+        `;
+    } else {
+        grid.innerHTML = papers.map(paper => createPaperCard(paper)).join('');
+    }
+
+    // Content is in the DOM — snap to opacity 0, force a reflow so the
+    // browser commits the change, then animate back to 1.  This gives a
+    // clean fade-in with no blank-screen gap between hiding the skeleton
+    // and revealing the real cards.
+    grid.style.transition = 'none';
+    grid.style.opacity = '0';
+    grid.getBoundingClientRect(); // force reflow
+    grid.style.transition = 'opacity 0.2s ease';
+    grid.style.opacity = '1';
+
+    scrollToTop();
+    window.dispatchEvent(new Event('papersRendered'));
+}
+
+/**
+ * Fetch papers from the server
+ * @param {number} limit - Number of papers to fetch
+ * @param {number} offset - Number of papers to skip
+ * @returns {Promise<Object>} Server response with papers and pagination metadata
+ */
+async function fetchPapersFromServer(limit, offset = 0) {
+    const params = new URLSearchParams();
+
+    params.append('limit', limit.toString());
+    params.append('offset', offset.toString());
+
+    if (currentFilter !== 'all') {
+        params.append('topic', currentFilter);
+    }
+
+    if (currentSearch) {
+        params.append('search', currentSearch);
+    }
+
+    params.append('sort', currentSort);
+
+    const url = `${API_BASE_URL}/archive/latest?${params.toString()}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+/**
+ * Update stats display
+ */
+function updateStatsDisplay() {
+    let statsDiv = document.getElementById('archiveStats');
+    
+    if (!statsDiv) {
+        const archiveSection = document.querySelector('.archive');
+        if (!archiveSection) return;
+        
+        statsDiv = document.createElement('div');
+        statsDiv.id = 'archiveStats';
+        statsDiv.style.cssText = `
+            text-align: center;
+            margin-top: var(--space-md);
+            margin-bottom: var(--space-md);
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+        `;
+        
+        const sectionTitle = archiveSection.querySelector('.section-title');
+        if (sectionTitle && sectionTitle.nextSibling) {
+            archiveSection.insertBefore(statsDiv, sectionTitle.nextSibling);
+        }
+    }
+    
+    if (pageCache.has(currentPage)) {
+        const cached = pageCache.get(currentPage);
+        const papers = cached.papers;
+        
+        let message = `Page ${currentPage} of ${totalPages}`;
+
+        if (papers.length > 0) {
+            message += ` • ${papers.length} ${papers.length === 1 ? 'paper' : 'papers'}`;
+        }
+        
+        if (currentFilter !== 'all' || currentSearch) {
+            const filters = [];
+            if (currentFilter !== 'all') {
+                filters.push(`${currentFilter}`);
+            }
+            if (currentSearch) {
+                filters.push(`"${currentSearch}"`);
+            }
+            message += ` • ${filters.join(' • ')}`;
+        }
+        
+        statsDiv.textContent = message;
+        statsDiv.style.display = 'block';
+    } else {
+        statsDiv.style.display = 'none';
+    }
+}
+
+/**
+ * Pre-fetch a specific page (called on hover)
+ * @param {number} pageNumber - Page number to pre-fetch
+ */
+function prefetchPage(pageNumber) {
+    if (pageNumber < 1 ||
+        pageNumber > totalPages ||
+        pageCache.has(pageNumber) ||
+        prefetchInProgress.has(pageNumber)) {
+        return;
+    }
+    
+    console.log(`🔄 Pre-fetching page ${pageNumber} (hover triggered)`);
+    loadPage(pageNumber, true); // true = background fetch
+}
+
+/**
+ * Setup event listeners
  */
 function setupEventListeners() {
-    // Subscribe button listeners
     const subscribeButtons = document.querySelectorAll('.subscribe-btn');
     subscribeButtons.forEach(button => {
         button.addEventListener('click', openModal);
     });
     
-    // Filter button listeners
     const filterButtons = document.querySelectorAll('.filter-btn');
     filterButtons.forEach(button => {
         button.addEventListener('click', handleFilterClick);
     });
     
-    // Modal close button
     const closeButton = document.querySelector('.close-btn');
     if (closeButton) {
         closeButton.addEventListener('click', closeModal);
     }
     
-    // Modal backdrop click
     const modalOverlay = document.getElementById('modalOverlay');
     if (modalOverlay) {
         modalOverlay.addEventListener('click', handleBackdropClick);
     }
     
-    // Form submission
     const form = document.getElementById('subscribeForm');
     if (form) {
         form.addEventListener('submit', handleSubmit);
     }
 }
 
-/* ==========================================================================
-   Paper Rendering
-   ========================================================================== */
-
 /**
- * Renders research papers to the DOM with smooth transition.
- * Filters papers based on current selection and updates ARIA live region.
- * 
- * @returns {void}
+ * Handle filter button clicks
  */
-function renderPapers() {
-    const grid = document.getElementById('archiveGrid');
-    if (!grid) return;
+function handleFilterClick(event) {
+    const button = event.currentTarget;
+    const topic = button.dataset.topic;
     
-    const filteredPapers = currentFilter === 'all' 
-        ? samplePapers 
-        : samplePapers.filter(p => p.topic === currentFilter);
+    // Update active state
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-pressed', 'false');
+    });
     
-    // Announce filter change to screen readers
-    announceFilterChange(filteredPapers.length, currentFilter);
+    button.classList.add('active');
+    button.setAttribute('aria-pressed', 'true');
     
-    // Fade out current content
-    grid.style.opacity = '0';
-    
-    // Delay rendering to allow fade-out animation
-    setTimeout(() => {
-        grid.innerHTML = filteredPapers.map(paper => createPaperCard(paper)).join('');
-        
-        // Fade in new content using RAF for smooth animation
-        requestAnimationFrame(() => {
-            grid.style.opacity = '1';
-        });
-    }, 200);
+    // Update filter and reload
+    if (topic !== currentFilter) {
+        currentFilter = topic;
+        resetAndReload();
+    }
 }
 
 /**
- * Creates HTML markup for a single paper card.
- * Includes proper semantic structure and ARIA attributes.
- * 
- * @param {ResearchPaper} paper - Paper data object
- * @returns {string} HTML string for paper card
+ * Create HTML for a paper card
  */
 function createPaperCard(paper) {
     const topicLabel = paper.topic.charAt(0).toUpperCase() + paper.topic.slice(1);
@@ -244,7 +739,7 @@ function createPaperCard(paper) {
             <div class="paper-header">
                 <span 
                     class="topic-badge" 
-                    style="background: ${topicColors[paper.topic]}"
+                    style="background: ${topicColors[paper.topic] || topicColors.default}"
                     role="text"
                 >
                     ${topicLabel.toUpperCase()}
@@ -270,10 +765,7 @@ function createPaperCard(paper) {
 }
 
 /**
- * Escapes HTML special characters to prevent XSS attacks.
- * 
- * @param {string} text - Text to escape
- * @returns {string} Escaped text safe for HTML insertion
+ * Escape HTML to prevent XSS
  */
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -282,80 +774,47 @@ function escapeHtml(text) {
 }
 
 /**
- * Handles filter button clicks and updates UI state.
- * Updates ARIA pressed states for accessibility.
- * 
- * @param {Event} event - Click event object
- * @returns {void}
+ * Show temporary notification
  */
-function handleFilterClick(event) {
-    const button = event.currentTarget;
-    const topic = button.getAttribute('data-topic');
+function showTemporaryNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 1rem 1.5rem;
+        background: ${type === 'error' ? '#ef4444' : '#3b82f6'};
+        color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        animation: slideIn 0.3s ease;
+    `;
     
-    if (!topic) return;
+    document.body.appendChild(notification);
     
-    // Update current filter
-    currentFilter = topic;
-    
-    // Update ARIA pressed states on all filter buttons
-    const filterButtons = document.querySelectorAll('.filter-btn');
-    filterButtons.forEach(btn => {
-        const isPressed = btn === button;
-        btn.classList.toggle('active', isPressed);
-        btn.setAttribute('aria-pressed', isPressed.toString());
-    });
-    
-    // Re-render papers with new filter
-    renderPapers();
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
 }
 
-/* ==========================================================================
-   Accessibility Announcements
-   ========================================================================== */
-
 /**
- * Announces page load to screen readers.
- * 
- * @returns {void}
+ * Announce filter change to screen readers
  */
-function announcePageLoad() {
-    const statusElement = document.getElementById('filter-status');
-    if (statusElement) {
-        statusElement.textContent = 'Page loaded. Showing all research papers.';
-        
-        // Clear announcement after it's been read
-        setTimeout(() => {
-            statusElement.textContent = '';
-        }, 1000);
+function announceFilterChange(count, filter) {
+    const status = document.getElementById('filter-status');
+    if (status) {
+        const filterText = filter === 'all' ? 'all topics' : filter;
+        status.textContent = `Showing ${count} papers in ${filterText}`;
     }
 }
 
 /**
- * Announces filter changes to screen readers via ARIA live region.
- * 
- * @param {number} count - Number of papers displayed
- * @param {string} topic - Current filter topic
- * @returns {void}
+ * Setup topic checkboxes in subscription modal
  */
-function announceFilterChange(count, topic) {
-    const statusElement = document.getElementById('filter-status');
-    if (!statusElement) return;
-    
-    const topicText = topic === 'all' ? 'all topics' : topic;
-    const message = `Showing ${count} research ${count === 1 ? 'paper' : 'papers'} for ${topicText}.`;
-    
-    statusElement.textContent = message;
-    
-    // Clear announcement after it's been read
-    setTimeout(() => {
-        statusElement.textContent = '';
-    }, 3000);
-}
-
-/* ==========================================================================
-   Form Interactions
-   ========================================================================== */
-
 /**
  * Sets up checkbox wrapper interactions for enhanced UX.
  * Allows clicking anywhere on wrapper to toggle checkbox while
@@ -387,181 +846,419 @@ function setupCheckboxes() {
     });
 }
 
-/* ==========================================================================
-   Scroll Effects
-   ========================================================================== */
+/**
+ * Setup floating preview card (Option B)
+ * Creates a stylish tooltip-like preview that appears on the opposite side
+ * of the screen from the cursor position. The preview follows the cursor
+ * vertically as you move within a card, creating a responsive feel.
+ */
+function setupPreviewCard() {
+    // Create simplified preview card element (title, journal, and summary)
+    const previewCard = document.createElement('div');
+    previewCard.className = 'preview-card';
+    previewCard.setAttribute('role', 'tooltip');
+    previewCard.setAttribute('aria-hidden', 'true');
+    previewCard.innerHTML = `
+        <div class="preview-card-header">
+            <h3 class="preview-title"></h3>
+            <p class="preview-journal"></p>
+        </div>
+        <p class="preview-summary"></p>
+    `;
+    document.body.appendChild(previewCard);
+    console.log('✅ Preview card created and added to body');
+    
+    let showTimeout = null;
+    let hideTimeout = null;
+    let currentSide = null; // Track current side (left or right)
+    let lastMoveTime = 0;
+    const moveThrottle = 30; // Update position at most every 30ms (more responsive)
+    
+    /**
+     * Update preview card content with paper data
+     * Returns true if content is valid, false otherwise
+     */
+    function updatePreviewContent(paper) {
+        // Validate that we have required content
+        if (!paper.title || !paper.summary || 
+            paper.title.trim() === '' || paper.summary.trim() === '') {
+            console.log('❌ Invalid paper content');
+            return false;
+        }
+        
+        previewCard.querySelector('.preview-title').textContent = paper.title;
+        previewCard.querySelector('.preview-journal').textContent = paper.journal || '';
+        previewCard.querySelector('.preview-summary').textContent = paper.summary;
+        console.log('✅ Content updated:', paper.title.substring(0, 30) + '...');
+        return true;
+    }
+    
+    /**
+     * Position preview on opposite side of screen from cursor
+     * and align both vertically and horizontally near the cursor position
+     */
+    function positionPreview(mouseX, mouseY) {
+        const viewportCenterX = window.innerWidth / 2;
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        const distanceFromCenter = Math.abs(mouseX - viewportCenterX);
+        
+        // Determine horizontal position (opposite side from cursor)
+        const newSide = mouseX < viewportCenterX ? 'right' : 'left';
+        
+        // Calculate dynamic horizontal offset from cursor
+        const horizontalOffset = 48; // ~3rem (48px) away from cursor
+        const previewWidth = 380; // preview card width
+        const margin = 20; // minimum margin from screen edges
+        
+        let horizontalPosition;
+        
+        if (newSide === 'right') {
+            // Cursor is on left, show preview on right
+            // Position preview to the right of cursor
+            horizontalPosition = mouseX + horizontalOffset;
+            
+            // Ensure we don't go off the right edge
+            if (horizontalPosition + previewWidth > viewportWidth - margin) {
+                horizontalPosition = viewportWidth - previewWidth - margin;
+            }
+        } else {
+            // Cursor is on right, show preview on left
+            // Position preview to the left of cursor
+            horizontalPosition = mouseX - horizontalOffset - previewWidth;
+            
+            // Ensure we don't go off the left edge
+            if (horizontalPosition < margin) {
+                horizontalPosition = margin;
+            }
+        }
+        
+        // Check if side is changing
+        const sideChanged = currentSide !== null && currentSide !== newSide;
+        
+        if (sideChanged) {
+            console.log('📍 Side changing - Cursor position:', { 
+                mouseX, 
+                mouseY, 
+                newSide, 
+                oldSide: currentSide,
+                distanceFromCenter: Math.round(distanceFromCenter),
+                horizontalPosition: Math.round(horizontalPosition)
+            });
+        }
+        
+        if (sideChanged) {
+            // Fade out, change side, then fade in
+            previewCard.classList.add('transitioning');
+            
+            setTimeout(() => {
+                // Remove existing position classes
+                previewCard.classList.remove('preview-left', 'preview-right');
+                
+                // Add new position class
+                previewCard.classList.add(`preview-${newSide}`);
+                currentSide = newSide;
+                
+                // Set horizontal position (always use left for consistency)
+                previewCard.style.left = `${horizontalPosition}px`;
+                previewCard.style.right = 'auto';
+                
+                // Remove transitioning class to fade back in
+                previewCard.classList.remove('transitioning');
+                console.log('✅ Side transition complete:', newSide, 'at position:', Math.round(horizontalPosition));
+            }, 250); // Match transition duration (0.25s)
+        } else {
+            // Remove existing position classes
+            previewCard.classList.remove('preview-left', 'preview-right');
+            
+            // Add new position class
+            previewCard.classList.add(`preview-${newSide}`);
+            currentSide = newSide;
+            
+            // Set horizontal position (always use left for consistency)
+            previewCard.style.left = `${horizontalPosition}px`;
+            previewCard.style.right = 'auto';
+        }
+        
+        // Calculate vertical position near cursor
+        // Center the preview around the cursor Y position
+        const previewHeight = previewCard.offsetHeight || 400; // fallback estimate
+        let top = mouseY - (previewHeight / 2);
+        
+        // Add margin from top/bottom edges
+        const verticalMargin = 20;
+        
+        // Ensure preview doesn't go off top of screen
+        if (top < verticalMargin) {
+            top = verticalMargin;
+        }
+        
+        // Ensure preview doesn't go off bottom of screen
+        if (top + previewHeight > viewportHeight - verticalMargin) {
+            top = Math.max(verticalMargin, viewportHeight - previewHeight - verticalMargin);
+        }
+        
+        // Apply vertical position
+        previewCard.style.top = `${top}px`;
+    }
+    
+    /**
+     * Show preview card with proper animation timing
+     */
+    function showPreview() {
+        clearTimeout(showTimeout);
+        clearTimeout(hideTimeout);
+        
+        // Small delay to ensure smooth animation
+        showTimeout = setTimeout(() => {
+            previewCard.classList.add('active');
+            previewCard.setAttribute('aria-hidden', 'false');
+            console.log('✅ Preview shown, classes:', previewCard.className);
+            console.log('📊 Computed opacity:', getComputedStyle(previewCard).opacity);
+        }, 30);
+    }
+    
+    /**
+     * Hide preview card
+     */
+    function hidePreview() {
+        clearTimeout(showTimeout);
+        clearTimeout(hideTimeout);
+        
+        // Add slight delay to prevent flickering
+        hideTimeout = setTimeout(() => {
+            previewCard.classList.remove('active');
+            previewCard.setAttribute('aria-hidden', 'true');
+            currentSide = null; // Reset side tracking
+            console.log('✅ Preview hidden');
+        }, 50);
+    }
+    
+    /**
+     * Attach listeners to all paper cards
+     */
+    function attachCardListeners() {
+        const cards = document.querySelectorAll('.paper-card');
+        console.log(`🔗 Attaching listeners to ${cards.length} cards`);
+        
+        cards.forEach((card, index) => {
+            // Remove existing listeners if any (to avoid duplicates)
+            card.removeEventListener('mouseenter', card._previewEnterHandler);
+            card.removeEventListener('mouseleave', card._previewLeaveHandler);
+            card.removeEventListener('mousemove', card._previewMoveHandler);
+            
+            // Create handlers
+            const enterHandler = (e) => {
+                console.log(`🖱️ Mouse entered card ${index} at position (${e.clientX}, ${e.clientY})`);
+                
+                // Get mouse position
+                const mouseX = e.clientX;
+                const mouseY = e.clientY;
+                
+                // Extract paper data from card
+                const title = card.querySelector('.paper-title')?.textContent;
+                const summary = card.querySelector('.paper-summary')?.textContent;
+                const journal = card.querySelector('.journal')?.textContent;
+                
+                // Only show preview if content is valid
+                if (title && summary) {
+                    const paper = { title, summary, journal };
+                    const isValid = updatePreviewContent(paper);
+                    
+                    if (isValid) {
+                        positionPreview(mouseX, mouseY);
+                        showPreview();
+                    }
+                }
+            };
+            
+            const leaveHandler = () => {
+                console.log(`🖱️ Mouse left card ${index}`);
+                hidePreview();
+            };
+            
+            const moveHandler = (e) => {
+                // Throttle mousemove updates for performance
+                const now = Date.now();
+                if (now - lastMoveTime < moveThrottle) {
+                    return;
+                }
+                lastMoveTime = now;
+                
+                // Update preview position as mouse moves within card
+                if (previewCard.classList.contains('active')) {
+                    const mouseX = e.clientX;
+                    const mouseY = e.clientY;
+                    console.log(`🎯 Cursor tracking: (${mouseX}, ${mouseY})`);
+                    positionPreview(mouseX, mouseY);
+                }
+            };
+            
+            // Store handlers on element for cleanup
+            card._previewEnterHandler = enterHandler;
+            card._previewLeaveHandler = leaveHandler;
+            card._previewMoveHandler = moveHandler;
+            
+            // Attach listeners
+            card.addEventListener('mouseenter', enterHandler);
+            card.addEventListener('mouseleave', leaveHandler);
+            card.addEventListener('mousemove', moveHandler);
+        });
+    }
+    
+    // Initial setup - delay to ensure cards are rendered
+    setTimeout(() => {
+        attachCardListeners();
+    }, 500);
+    
+    // Reattach when cards are re-rendered
+    const archiveGrid = document.getElementById('archiveGrid');
+    if (archiveGrid) {
+        const observer = new MutationObserver(() => {
+            setTimeout(() => {
+                attachCardListeners();
+            }, 100);
+        });
+        
+        observer.observe(archiveGrid, { childList: true });
+    }
+    
+    // Also reattach after render (backup method)
+    window.addEventListener('papersRendered', () => {
+        setTimeout(() => {
+            attachCardListeners();
+        }, 100);
+    });
+}
 
 /**
- * Sets up scroll-based UI effects.
- * Adds shadow to header when user scrolls down for visual feedback.
- * 
- * @returns {void}
+ * Setup scroll effects for header
  */
 function setupScrollEffects() {
     const header = document.querySelector('.header');
-    if (!header) return;
+    const filterBar = document.querySelector('.filter-bar');
+    
+    if (!header || !filterBar) return;
     
     let lastScroll = 0;
+    const scrollThreshold = 50;
     
     window.addEventListener('scroll', () => {
         const currentScroll = window.pageYOffset;
         
-        // Add shadow class when scrolled past threshold
-        if (currentScroll > 10) {
+        if (currentScroll > scrollThreshold) {
             header.classList.add('scrolled');
         } else {
             header.classList.remove('scrolled');
         }
         
         lastScroll = currentScroll;
-    }, { passive: true }); // Passive listener for better scroll performance
+    });
 }
 
-/* ==========================================================================
-   Keyboard Navigation
-   ========================================================================== */
-
 /**
- * Sets up keyboard navigation shortcuts.
- * Handles ESC key to close modal and other keyboard interactions.
- * 
- * @returns {void}
+ * Setup keyboard navigation
  */
 function setupKeyboardNav() {
-    document.addEventListener('keydown', (e) => {
+    document.addEventListener('keydown', (event) => {
         const modalOverlay = document.getElementById('modalOverlay');
+        const isModalOpen = modalOverlay && modalOverlay.classList.contains('active');
         
-        // Close modal on Escape key
-        if (e.key === 'Escape' && modalOverlay && !modalOverlay.hasAttribute('aria-hidden')) {
+        if (event.key === 'Escape' && isModalOpen) {
             closeModal();
         }
         
-        // Handle Tab key for focus trapping in modal
-        if (e.key === 'Tab' && modalOverlay && !modalOverlay.hasAttribute('aria-hidden')) {
-            handleModalTabKey(e);
+        if (event.key === 'Tab' && isModalOpen) {
+            trapFocus(event);
         }
     });
 }
 
 /**
- * Handles Tab key press within modal for focus trapping.
- * Keeps focus within modal while it's open.
- * 
- * @param {KeyboardEvent} e - Keyboard event
- * @returns {void}
+ * Trap focus within modal
  */
-function handleModalTabKey(e) {
-    if (focusableElements.length === 0) return;
+function trapFocus(event) {
+    const modal = document.querySelector('.modal');
+    if (!modal) return;
+    
+    if (focusableElements.length === 0) {
+        focusableElements = getFocusableElements(modal);
+    }
     
     const firstElement = focusableElements[0];
     const lastElement = focusableElements[focusableElements.length - 1];
     
-    // Shift + Tab on first element: move to last element
-    if (e.shiftKey && document.activeElement === firstElement) {
-        e.preventDefault();
+    if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
         lastElement.focus();
-    }
-    // Tab on last element: move to first element
-    else if (!e.shiftKey && document.activeElement === lastElement) {
-        e.preventDefault();
+    } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
         firstElement.focus();
     }
 }
 
-/* ==========================================================================
-   Modal Management
-   ========================================================================== */
-
 /**
- * Opens the subscription modal with proper accessibility features.
- * - Traps focus within modal
- * - Prevents body scrolling
- * - Saves last focused element for restoration
- * - Announces modal opening to screen readers
- * 
- * @returns {void}
+ * Open subscription modal
  */
 function openModal() {
     const modalOverlay = document.getElementById('modalOverlay');
     if (!modalOverlay) return;
     
-    // Save currently focused element
     lastFocusedElement = document.activeElement;
     
-    // Show modal
     modalOverlay.classList.add('active');
     modalOverlay.setAttribute('aria-hidden', 'false');
     
-    // Prevent body scrolling
     document.body.style.overflow = 'hidden';
     
-    // Get all focusable elements within modal for focus trapping
     const modal = modalOverlay.querySelector('.modal');
     if (modal) {
         focusableElements = getFocusableElements(modal);
+        
+        setTimeout(() => {
+            const firstFocusable = focusableElements[0];
+            if (firstFocusable) {
+                firstFocusable.focus();
+            }
+        }, 100);
     }
-    
-    // Focus first input after animation completes
-    setTimeout(() => {
-        const emailInput = document.getElementById('email');
-        if (emailInput) {
-            emailInput.focus();
-        }
-    }, 100);
 }
 
 /**
- * Closes the subscription modal with proper cleanup.
- * - Restores focus to element that opened modal
- * - Restores body scrolling
- * - Clears form and error messages
- * - Announces modal closing to screen readers
- * 
- * @returns {void}
+ * Close subscription modal
  */
 function closeModal() {
     const modalOverlay = document.getElementById('modalOverlay');
     if (!modalOverlay) return;
     
-    // Hide modal
     modalOverlay.classList.remove('active');
     modalOverlay.setAttribute('aria-hidden', 'true');
     
-    // Restore body scrolling
     document.body.style.overflow = '';
     
-    // Restore focus to element that opened modal
     if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
         lastFocusedElement.focus();
     }
     
-    // Reset form and clear messages after animation completes
     setTimeout(() => {
         const form = document.getElementById('subscribeForm');
         if (form) {
             form.reset();
         }
         
-        // Clear all error messages
         clearFormErrors();
         
-        // Clear status message
         const messageDiv = document.getElementById('message');
         if (messageDiv) {
             messageDiv.innerHTML = '';
         }
         
-        // Reinitialize checkboxes to update checked state
         setupCheckboxes();
     }, 300);
 }
 
 /**
- * Handles clicks on modal backdrop to close modal.
- * Only closes if backdrop itself is clicked, not modal content.
- * 
- * @param {MouseEvent} event - Click event object
- * @returns {void}
+ * Handle backdrop click to close modal
  */
 function handleBackdropClick(event) {
     if (event.target === event.currentTarget) {
@@ -570,17 +1267,12 @@ function handleBackdropClick(event) {
 }
 
 /**
- * Gets all focusable elements within a container.
- * Used for focus trapping in modal dialogs.
- * 
- * @param {HTMLElement} container - Container element to search
- * @returns {HTMLElement[]} Array of focusable elements
+ * Get focusable elements within container
  */
 function getFocusableElements(container) {
     const selector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
     const elements = container.querySelectorAll(selector);
     
-    // Filter out disabled elements and return as array
     return Array.from(elements).filter(el => 
         !el.hasAttribute('disabled') && 
         !el.hasAttribute('hidden') &&
@@ -588,19 +1280,8 @@ function getFocusableElements(container) {
     );
 }
 
-/* ==========================================================================
-   Form Submission
-   ========================================================================== */
-
 /**
- * Handles subscription form submission with validation.
- * - Validates email and topic selection
- * - Shows accessible error messages
- * - Sends data to API
- * - Provides user feedback via ARIA live regions
- * 
- * @param {Event} event - Form submit event
- * @returns {Promise<void>}
+ * Handle subscription form submit
  */
 async function handleSubmit(event) {
     event.preventDefault();
@@ -613,30 +1294,24 @@ async function handleSubmit(event) {
     const messageDiv = document.getElementById('message');
     const submitBtn = document.getElementById('submitBtn');
     
-    // Clear previous messages and errors
     clearFormErrors();
     if (messageDiv) {
         messageDiv.innerHTML = '';
     }
     
-    // Validate form
     let hasError = false;
     
-    // Validate email
     if (!email || !isValidEmail(email)) {
         showFieldError('email', 'Please enter a valid email address.');
         hasError = true;
     }
     
-    // Validate topic selection
     if (topics.length === 0) {
         showFieldError('topics', 'Please select at least one topic.');
         
-        // Add shake animation to checkboxes for visual feedback
         const checkboxContainer = document.querySelector('.topic-checkboxes');
         if (checkboxContainer) {
             checkboxContainer.style.animation = 'none';
-            // Trigger reflow to restart animation
             void checkboxContainer.offsetWidth;
             checkboxContainer.style.animation = 'shake 0.5s ease';
         }
@@ -645,7 +1320,6 @@ async function handleSubmit(event) {
     }
     
     if (hasError) {
-        // Focus first field with error
         const firstError = document.querySelector('.form-input.error, .topic-checkboxes');
         if (firstError) {
             firstError.focus();
@@ -653,7 +1327,6 @@ async function handleSubmit(event) {
         return;
     }
     
-    // Update button state to prevent duplicate submissions
     if (submitBtn) {
         submitBtn.disabled = true;
         submitBtn.textContent = 'Subscribing...';
@@ -662,7 +1335,6 @@ async function handleSubmit(event) {
     }
     
     try {
-        // Send subscription request to API
         const response = await fetch(`${API_BASE_URL}/subscribe`, {
             method: 'POST',
             headers: {
@@ -674,34 +1346,28 @@ async function handleSubmit(event) {
         const data = await response.json();
         
         if (response.ok) {
-            // Show success message
             if (messageDiv) {
-                messageDiv.innerHTML = '<div class="message success" role="status">✓ Success! Check your email to confirm your subscription.</div>';
+                messageDiv.innerHTML = '<div class="message success" role="status"><i class="fas fa-check-circle"></i> Success! Check your email to confirm your subscription.</div>';
             }
             
-            // Reset form
             form.reset();
             setupCheckboxes();
             
-            // Auto-close modal after successful subscription
             setTimeout(() => {
                 closeModal();
             }, 3000);
         } else {
-            // Show error message from API
             const errorMessage = data.error || 'Subscription failed. Please try again.';
             if (messageDiv) {
-                messageDiv.innerHTML = `<div class="message error" role="alert">✗ ${escapeHtml(errorMessage)}</div>`;
+                messageDiv.innerHTML = `<div class="message error" role="alert"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(errorMessage)}</div>`;
             }
         }
     } catch (error) {
-        // Handle network errors
         console.error('Subscription error:', error);
         if (messageDiv) {
-            messageDiv.innerHTML = '<div class="message error" role="alert">✗ Network error. Please check your connection and try again.</div>';
+            messageDiv.innerHTML = '<div class="message error" role="alert"><i class="fas fa-exclamation-circle"></i> Network error. Please check your connection and try again.</div>';
         }
     } finally {
-        // Restore button state
         if (submitBtn) {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Subscribe';
@@ -711,16 +1377,8 @@ async function handleSubmit(event) {
     }
 }
 
-/* ==========================================================================
-   Form Validation
-   ========================================================================== */
-
 /**
- * Validates email address format.
- * Uses standard email regex pattern.
- * 
- * @param {string} email - Email address to validate
- * @returns {boolean} True if email is valid
+ * Validate email format
  */
 function isValidEmail(email) {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -728,12 +1386,7 @@ function isValidEmail(email) {
 }
 
 /**
- * Shows error message for a form field.
- * Updates ARIA attributes and displays error text.
- * 
- * @param {string} fieldId - ID of the form field
- * @param {string} message - Error message to display
- * @returns {void}
+ * Show field error message
  */
 function showFieldError(fieldId, message) {
     if (fieldId === 'email') {
@@ -755,13 +1408,9 @@ function showFieldError(fieldId, message) {
 }
 
 /**
- * Clears all form error messages and states.
- * Removes error classes and ARIA attributes.
- * 
- * @returns {void}
+ * Clear all form errors
  */
 function clearFormErrors() {
-    // Clear email error
     const emailInput = document.getElementById('email');
     const emailError = document.getElementById('email-error');
     
@@ -774,87 +1423,14 @@ function clearFormErrors() {
         emailError.textContent = '';
     }
     
-    // Clear topics error
     const topicsError = document.getElementById('topics-error');
     if (topicsError) {
         topicsError.textContent = '';
     }
 }
 
-/* ==========================================================================
-   Animation Utilities
-   ========================================================================== */
-
-/**
- * Adds shake animation styles to document head.
- * Used for form validation feedback.
- * Only added once to avoid duplicate style tags.
- */
-(() => {
-    const styleId = 'shake-animation-style';
-    
-    // Check if style already exists
-    if (document.getElementById(styleId)) return;
-    
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = `
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
-            20%, 40%, 60%, 80% { transform: translateX(5px); }
-        }
-    `;
-    document.head.appendChild(style);
-})();
-
-/* ==========================================================================
-   Smooth Scroll Enhancement
-   ========================================================================== */
-
-/**
- * Enables smooth scrolling for anchor links.
- * Uses native scrollIntoView with smooth behavior.
- * Only applies to hash links on same page.
- */
-document.addEventListener('DOMContentLoaded', () => {
-    const anchorLinks = document.querySelectorAll('a[href^="#"]');
-    
-    anchorLinks.forEach(anchor => {
-        anchor.addEventListener('click', function(e) {
-            const href = this.getAttribute('href');
-            
-            // Skip if href is just "#"
-            if (href === '#') return;
-            
-            const target = document.querySelector(href);
-            if (!target) return;
-            
-            e.preventDefault();
-            
-            target.scrollIntoView({
-                behavior: 'smooth',
-                block: 'start'
-            });
-            
-            // Set focus on target for keyboard users
-            target.setAttribute('tabindex', '-1');
-            target.focus();
-        });
-    });
-});
-
-/* ==========================================================================
-   Reduced Motion Support
-   ========================================================================== */
-
-/**
- * Disables animations for users who prefer reduced motion.
- * Respects system-level accessibility preference.
- * Updates CSS custom properties to remove transitions.
- */
+// Respect user's motion preferences
 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    // Set transition times to near-instant
     document.documentElement.style.setProperty('--transition-fast', '0.01ms');
     document.documentElement.style.setProperty('--transition-normal', '0.01ms');
     document.documentElement.style.setProperty('--transition-slow', '0.01ms');

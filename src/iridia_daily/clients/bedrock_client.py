@@ -1,7 +1,10 @@
 """AWS Bedrock integration for AI-powered content generation."""
 
 import json
+import os
 import boto3
+
+DEFAULT_MODEL_ID = 'us.anthropic.claude-sonnet-4-6'
 
 
 class BedrockClient:
@@ -9,12 +12,12 @@ class BedrockClient:
 
     def __init__(self, region='us-east-1'):
         """Initialize Bedrock client.
-        
+
         Args:
             region: AWS region for Bedrock service.
         """
         self.client = boto3.client('bedrock-runtime', region_name=region)
-        self.model_id = 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+        self.model_id = os.environ.get('BEDROCK_MODEL_ID', DEFAULT_MODEL_ID)
     
     def generate_summaries(self, papers):
         """Generate entertaining summaries for research papers.
