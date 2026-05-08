@@ -13,10 +13,15 @@ let allPapers = []; // Deprecated - kept for backward compatibility
 let currentFilter = 'all';
 let currentSearch = '';
 let currentSort = 'date_desc';
+let currentView = 'list'; // 'list' or 'grid'
 let currentPerPage = 10; // Default display count
 let currentPage = 1; // Current page number
 let totalPages = 1; // Total pages reported by server
 let isLastPage = false; // True when server reports no next page
+
+// Pagination window — pages shown on each side of current page.
+// Controls width is computed from this value in setupPagination().
+const PAGINATION_DELTA = 3;
 
 // Page cache for pre-fetching
 let pageCache = new Map(); // Map<pageNumber, {papers, pagination, timestamp}>
@@ -54,14 +59,21 @@ document.addEventListener('DOMContentLoaded', () => {
     setupScrollEffects();
     setupKeyboardNav();
     setupSearchBar();
+    setupViewToggle();
     setupPagination();
     setupPreviewCard();
+    applyViewClass();
 });
 
 /**
  * Setup pagination components (top and bottom)
  */
 function setupPagination() {
+    // Grid columns: prev + ctxLeft + window(2*delta+1) + ctxRight + next
+    // ctxLeft is either the page-1 button or the left gap — always occupied, never empty.
+    // ctxRight is either the last-page button or the right gap — same.
+    const cols = 2 * PAGINATION_DELTA + 5;
+    document.documentElement.style.setProperty('--pagination-grid-cols', cols);
     createPaginationComponents();
 }
 
@@ -178,73 +190,36 @@ function updatePaginationDisplay() {
         if (controls) {
             controls.innerHTML = '';
             
-            // Previous button
+            // Previous button — always in grid column 1
             const prevBtn = document.createElement('button');
             prevBtn.className = 'pagination-btn';
             prevBtn.innerHTML = '&laquo;';
             prevBtn.setAttribute('aria-label', 'Previous page');
             prevBtn.disabled = currentPage === 1;
+            prevBtn.style.gridColumn = '1';
             prevBtn.addEventListener('click', () => {
-                if (currentPage > 1) {
-                    loadPage(currentPage - 1);
-                }
+                if (currentPage > 1) loadPage(currentPage - 1);
             });
-            // Prefetch previous page on hover
             prevBtn.addEventListener('mouseenter', () => {
-                if (currentPage > 1) {
-                    prefetchPage(currentPage - 1);
-                }
+                if (currentPage > 1) prefetchPage(currentPage - 1);
             });
             controls.appendChild(prevBtn);
-            
-            // Page numbers - show only pages we know exist
-            const pages = getVisiblePageNumbers(currentPage, maxVisiblePage);
-            pages.forEach(page => {
-                if (page === '...') {
-                    const ellipsis = document.createElement('span');
-                    ellipsis.className = 'pagination-ellipsis';
-                    ellipsis.textContent = '...';
-                    controls.appendChild(ellipsis);
-                } else {
-                    const pageBtn = document.createElement('button');
-                    pageBtn.className = 'pagination-btn';
-                    if (page === currentPage) {
-                        pageBtn.classList.add('active');
-                        pageBtn.setAttribute('aria-current', 'page');
-                    }
-                    pageBtn.textContent = page;
-                    pageBtn.setAttribute('aria-label', `Page ${page}`);
-                    
-                    // Click handler
-                    pageBtn.addEventListener('click', () => {
-                        loadPage(page);
-                    });
-                    
-                    // Hover to prefetch
-                    pageBtn.addEventListener('mouseenter', () => {
-                        prefetchPage(page);
-                    });
-                    
-                    controls.appendChild(pageBtn);
-                }
-            });
-            
-            // Next button
+
+            // Page slots — each element placed into its fixed grid column
+            renderPageSlots(controls, currentPage, maxVisiblePage);
+
+            // Next button — always in the last grid column
             const nextBtn = document.createElement('button');
             nextBtn.className = 'pagination-btn';
             nextBtn.innerHTML = '&raquo;';
             nextBtn.setAttribute('aria-label', 'Next page');
             nextBtn.disabled = isLastPage;
+            nextBtn.style.gridColumn = String(2 * PAGINATION_DELTA + 5);
             nextBtn.addEventListener('click', () => {
-                if (!isLastPage) {
-                    loadPage(currentPage + 1);
-                }
+                if (!isLastPage) loadPage(currentPage + 1);
             });
-            // Prefetch next page on hover
             nextBtn.addEventListener('mouseenter', () => {
-                if (!isLastPage) {
-                    prefetchPage(currentPage + 1);
-                }
+                if (!isLastPage) prefetchPage(currentPage + 1);
             });
             controls.appendChild(nextBtn);
         }
@@ -252,44 +227,134 @@ function updatePaginationDisplay() {
 }
 
 /**
- * Get visible page numbers for pagination display
+ * Render page-number slots into the controls element using CSS grid.
+ * Each button is assigned an explicit grid-column so its position never shifts.
+ *
+ * Grid layout (1-indexed):
+ *   col 1            : PREV  (set by caller)
+ *   col 2            : ctxLeft  — page-1 button (when window is adjacent to page 1)
+ *                                OR left-gap "..." (covers pages 1..winStart-1)
+ *   cols 3..3+W-1    : window of W = 2*delta+1 pages centred on current
+ *   col 3+W          : ctxRight — last-page button (when window is adjacent to last page)
+ *                                OR right-gap "..." (covers pages winEnd+1..total)
+ *   col 3+W+1        : NEXT  (set by caller)
+ *
+ * ctxLeft and ctxRight are always occupied, so no empty columns appear between
+ * page 1 and the window, or between the window and the last page.
  */
-function getVisiblePageNumbers(current, maxPage) {
-    const pages = [];
-    const delta = 2; // Number of pages to show on each side of current
-    
-    // Always show page 1
-    pages.push(1);
-    
-    if (maxPage === 1) {
-        return pages;
+function renderPageSlots(controls, current, total) {
+    const delta = PAGINATION_DELTA;
+    const W          = 2 * delta + 1;
+    const ctxLeftCol = 2;
+    const winStartCol = 3;
+    const ctxRightCol = 3 + W;   // col right after the window
+
+    // Clamp window to stay within [2, total-1]
+    const winStart = Math.max(2, Math.min(current - delta, total - W));
+    const winEnd   = winStart + W - 1;
+
+    const makePageBtn = (page, col) => {
+        const btn = document.createElement('button');
+        btn.className = 'pagination-btn';
+        btn.textContent = page;
+        btn.setAttribute('aria-label', `Page ${page}`);
+        btn.style.gridColumn = String(col);
+        if (page === current) {
+            btn.classList.add('active');
+            btn.setAttribute('aria-current', 'page');
+        }
+        btn.addEventListener('click', () => loadPage(page));
+        btn.addEventListener('mouseenter', () => prefetchPage(page));
+        return btn;
+    };
+
+    const makeGapBtn = (min, max, col) => {
+        const btn = document.createElement('button');
+        btn.className = 'pagination-ellipsis pagination-ellipsis-jump';
+        btn.textContent = '...';
+        btn.setAttribute('aria-label', `Jump to page, range ${min} to ${max}`);
+        btn.setAttribute('title', `Click to jump (pages ${min}–${max})`);
+        btn.style.gridColumn = String(col);
+        btn.addEventListener('click', () => activateJumpInput(btn, min, max));
+        return btn;
+    };
+
+    // col 2 (ctxLeft): page-1 button when adjacent, otherwise left gap covering page 1
+    if (winStart === 2) {
+        controls.appendChild(makePageBtn(1, ctxLeftCol));
+    } else {
+        controls.appendChild(makeGapBtn(1, winStart - 1, ctxLeftCol));
     }
-    
-    // Calculate range around current page
-    const start = Math.max(2, current - delta);
-    const end = Math.min(maxPage, current + delta);
-    
-    // Add ellipsis after first page if needed
-    if (start > 2) {
-        pages.push('...');
+
+    // cols 3..3+W-1: window pages (skip invalid pages near the edges)
+    for (let p = winStart; p <= winEnd; p++) {
+        if (p >= 2 && p <= total - 1) {
+            controls.appendChild(makePageBtn(p, winStartCol + (p - winStart)));
+        }
     }
-    
-    // Add pages around current
-    for (let i = start; i <= end; i++) {
-        pages.push(i);
+
+    // col 3+W (ctxRight): last-page button when adjacent, otherwise right gap covering last page
+    if (total > 1) {
+        if (winEnd === total - 1) {
+            controls.appendChild(makePageBtn(total, ctxRightCol));
+        } else {
+            controls.appendChild(makeGapBtn(winEnd + 1, total, ctxRightCol));
+        }
     }
-    
-    // Add ellipsis before last if needed
-    if (end < maxPage - 1) {
-        pages.push('...');
-    }
-    
-    // Show the max page if it's not already shown
-    if (maxPage > 1 && end < maxPage) {
-        pages.push(maxPage);
-    }
-    
-    return pages;
+}
+
+/**
+ * Replace an ellipsis button with an inline number input for page jumping.
+ * Commits on Enter or blur; cancels on Escape or invalid value.
+ */
+function activateJumpInput(ellipsisEl, min, max) {
+    // Wrapper sits in the same grid cell as the gap button
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pagination-jump-wrapper';
+    wrapper.style.gridColumn = ellipsisEl.style.gridColumn;
+
+    // Tooltip above showing valid range
+    const tooltip = document.createElement('span');
+    tooltip.className = 'pagination-jump-tooltip';
+    tooltip.textContent = `${min}–${max}`;
+    wrapper.appendChild(tooltip);
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'pagination-jump-input';
+    input.min = min;
+    input.max = max;
+    input.setAttribute('aria-label', `Jump to page (${min}–${max})`);
+    wrapper.appendChild(input);
+
+    ellipsisEl.replaceWith(wrapper);
+    input.focus();
+
+    let settled = false;
+
+    const commit = () => {
+        if (settled) return;
+        settled = true;
+        const value = parseInt(input.value);
+        if (value >= min && value <= max) {
+            loadPage(value);
+        } else {
+            wrapper.replaceWith(ellipsisEl);
+        }
+    };
+
+    const cancel = () => {
+        if (settled) return;
+        settled = true;
+        wrapper.replaceWith(ellipsisEl);
+    };
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') cancel();
+    });
+
+    input.addEventListener('blur', commit);
 }
 
 /**
@@ -404,7 +469,31 @@ function createSearchBar() {
     searchWrapper.appendChild(searchInput);
     searchWrapper.appendChild(clearBtn);
     searchContainer.appendChild(searchWrapper);
-    
+
+    const viewToggle = document.createElement('div');
+    viewToggle.className = 'view-toggle' + (currentView === 'grid' ? ' grid-active' : '');
+    viewToggle.setAttribute('role', 'button');
+    viewToggle.setAttribute('tabindex', '0');
+    viewToggle.setAttribute('aria-label', `Toggle view (currently ${currentView})`);
+
+    const thumb = document.createElement('span');
+    thumb.className = 'view-toggle-thumb';
+
+    const listIcon = document.createElement('span');
+    listIcon.className = 'view-toggle-icon';
+    listIcon.dataset.view = 'list';
+    listIcon.innerHTML = '<i class="fas fa-list" aria-hidden="true"></i>';
+
+    const gridIcon = document.createElement('span');
+    gridIcon.className = 'view-toggle-icon';
+    gridIcon.dataset.view = 'grid';
+    gridIcon.innerHTML = '<i class="fas fa-th" aria-hidden="true"></i>';
+
+    viewToggle.appendChild(thumb);
+    viewToggle.appendChild(listIcon);
+    viewToggle.appendChild(gridIcon);
+    searchContainer.appendChild(viewToggle);
+
     filterBar.parentNode.insertBefore(searchContainer, filterBar.nextSibling);
     
     // Setup event listeners
@@ -507,24 +596,41 @@ function showSkeletonCards(count) {
     const grid = document.getElementById('archiveGrid');
     if (!grid) return;
 
+    applyViewClass();
+
     // Always make skeleton visible — previous render may have left opacity at 0.
     grid.style.transition = 'none';
     grid.style.opacity = '1';
 
-    grid.innerHTML = Array.from({ length: count }, () => `
-        <article class="paper-card skeleton" aria-hidden="true">
-            <div class="paper-header">
+    if (currentView === 'list') {
+        grid.innerHTML = Array.from({ length: count }, () => `
+            <article class="paper-card list-layout skeleton" aria-hidden="true">
                 <span class="skeleton-block skeleton-badge"></span>
-                <span class="skeleton-block skeleton-date"></span>
-            </div>
-            <div class="skeleton-block skeleton-title"></div>
-            <div class="skeleton-block skeleton-text"></div>
-            <div class="skeleton-block skeleton-text short"></div>
-            <div class="paper-footer">
-                <span class="skeleton-block skeleton-journal"></span>
-            </div>
-        </article>
-    `).join('');
+                <div class="list-body">
+                    <div class="skeleton-block skeleton-title"></div>
+                    <div class="skeleton-block skeleton-journal" style="margin-top:6px;"></div>
+                </div>
+                <div class="list-meta">
+                    <span class="skeleton-block skeleton-date"></span>
+                    <span class="skeleton-block" style="width:80px;height:28px;border-radius:6px;"></span>
+                </div>
+            </article>
+        `).join('');
+    } else {
+        grid.innerHTML = Array.from({ length: count }, () => `
+            <article class="paper-card skeleton" aria-hidden="true">
+                <div class="paper-header">
+                    <span class="skeleton-block skeleton-badge"></span>
+                    <span class="skeleton-block skeleton-date"></span>
+                </div>
+                <div class="skeleton-block skeleton-title"></div>
+                <div class="skeleton-block skeleton-journal"></div>
+                <div class="paper-footer">
+                    <span class="skeleton-block" style="width:80px;height:26px;border-radius:8px;"></span>
+                </div>
+            </article>
+        `).join('');
+    }
 }
 
 /**
@@ -533,7 +639,9 @@ function showSkeletonCards(count) {
 function renderPageFromCache(cachedPage) {
     const grid = document.getElementById('archiveGrid');
     if (!grid) return;
-    
+
+    applyViewClass();
+
     const papers = cachedPage.papers;
     
     // Announce change for screen readers
@@ -568,7 +676,6 @@ function renderPageFromCache(cachedPage) {
     grid.style.transition = 'opacity 0.2s ease';
     grid.style.opacity = '1';
 
-    scrollToTop();
     window.dispatchEvent(new Event('papersRendered'));
 }
 
@@ -733,13 +840,39 @@ function handleFilterClick(event) {
  */
 function createPaperCard(paper) {
     const topicLabel = paper.topic.charAt(0).toUpperCase() + paper.topic.slice(1);
-    
+    const badgeColor = topicColors[paper.topic] || topicColors.default;
+
+    if (currentView === 'list') {
+        return `
+            <article class="paper-card list-layout" aria-labelledby="paper-${paper.topic}-title" data-summary="${escapeHtml(paper.summary)}">
+                <span class="topic-badge" style="background: ${badgeColor}" role="text">
+                    ${topicLabel.toUpperCase()}
+                </span>
+                <div class="list-body">
+                    <h3 id="paper-${paper.topic}-title" class="paper-title">${escapeHtml(paper.title)}</h3>
+                    <span class="journal">${escapeHtml(paper.journal)}</span>
+                </div>
+                <div class="list-meta">
+                    <time class="date" datetime="${paper.date}">${paper.date}</time>
+                    <a
+                        href="${escapeHtml(paper.url)}"
+                        class="read-more"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Read full paper: ${escapeHtml(paper.title)} (opens in new tab)"
+                    >Read paper</a>
+                </div>
+            </article>
+        `;
+    }
+
+    // Grid view (no summary, journal below header)
     return `
-        <article class="paper-card" aria-labelledby="paper-${paper.topic}-title">
+        <article class="paper-card" aria-labelledby="paper-${paper.topic}-title" data-summary="${escapeHtml(paper.summary)}">
             <div class="paper-header">
-                <span 
-                    class="topic-badge" 
-                    style="background: ${topicColors[paper.topic] || topicColors.default}"
+                <span
+                    class="topic-badge"
+                    style="background: ${badgeColor}"
                     role="text"
                 >
                     ${topicLabel.toUpperCase()}
@@ -747,13 +880,12 @@ function createPaperCard(paper) {
                 <time class="date" datetime="${paper.date}">${paper.date}</time>
             </div>
             <h3 id="paper-${paper.topic}-title" class="paper-title">${escapeHtml(paper.title)}</h3>
-            <p class="paper-summary">${escapeHtml(paper.summary)}</p>
+            <span class="journal">${escapeHtml(paper.journal)}</span>
             <div class="paper-footer">
-                <span class="journal">${escapeHtml(paper.journal)}</span>
-                <a 
-                    href="${escapeHtml(paper.url)}" 
-                    class="read-more" 
-                    target="_blank" 
+                <a
+                    href="${escapeHtml(paper.url)}"
+                    class="read-more"
+                    target="_blank"
                     rel="noopener noreferrer"
                     aria-label="Read full paper: ${escapeHtml(paper.title)} (opens in new tab)"
                 >
@@ -1057,7 +1189,7 @@ function setupPreviewCard() {
                 
                 // Extract paper data from card
                 const title = card.querySelector('.paper-title')?.textContent;
-                const summary = card.querySelector('.paper-summary')?.textContent;
+                const summary = card.dataset.summary;
                 const journal = card.querySelector('.journal')?.textContent;
                 
                 // Only show preview if content is valid
@@ -1132,26 +1264,67 @@ function setupPreviewCard() {
 }
 
 /**
+ * Apply the current view class to the archive grid
+ */
+function applyViewClass() {
+    const grid = document.getElementById('archiveGrid');
+    if (!grid) return;
+    grid.classList.toggle('list-view', currentView === 'list');
+    grid.classList.toggle('grid-view', currentView === 'grid');
+}
+
+/**
+ * Setup view toggle (List / Grid) single paddle
+ */
+function setupViewToggle() {
+    const toggle = document.querySelector('.view-toggle');
+    if (!toggle) return;
+
+    function activateToggle() {
+        currentView = currentView === 'list' ? 'grid' : 'list';
+        toggle.classList.toggle('grid-active', currentView === 'grid');
+        toggle.setAttribute('aria-label', `Toggle view (currently ${currentView})`);
+        applyViewClass();
+        const cached = pageCache.get(currentPage);
+        if (cached) renderPageFromCache(cached);
+    }
+
+    toggle.addEventListener('click', activateToggle);
+    toggle.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            activateToggle();
+        }
+    });
+}
+
+/**
  * Setup scroll effects for header
  */
 function setupScrollEffects() {
     const header = document.querySelector('.header');
     const filterBar = document.querySelector('.filter-bar');
-    
+
     if (!header || !filterBar) return;
-    
+
+    function syncHeaderHeight() {
+        document.documentElement.style.setProperty('--header-height', `${header.offsetHeight}px`);
+    }
+    syncHeaderHeight();
+    window.addEventListener('resize', syncHeaderHeight);
+
     let lastScroll = 0;
     const scrollThreshold = 50;
-    
+
     window.addEventListener('scroll', () => {
         const currentScroll = window.pageYOffset;
-        
+
         if (currentScroll > scrollThreshold) {
             header.classList.add('scrolled');
         } else {
             header.classList.remove('scrolled');
         }
-        
+
         lastScroll = currentScroll;
     });
 }
