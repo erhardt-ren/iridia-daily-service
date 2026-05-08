@@ -187,8 +187,16 @@ h3 {
     color: var(--color-accent);
     text-decoration: none;
     letter-spacing: -0.02em;
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
     transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.logo-icon {
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
 }
 
 .logo:hover {
