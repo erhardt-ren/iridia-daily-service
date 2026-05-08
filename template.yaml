@@ -138,6 +138,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6"
                   - "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
@@ -154,6 +155,12 @@ Resources:
                   - cloudwatch:PutMetricData
                 Resource: "*"
               
+              # Claude Subscription handling
+              - Effect: Allow
+                Action:
+                  - aws-marketplace:ViewSubscriptions
+                Resource: "*"
+
               # API Gateway (for URL construction)
               - Effect: Allow
                 Action:
