@@ -14,11 +14,13 @@ from .token_utils import generate_unsubscribe_token
 from .logger import set_lambda_context, log_info, log_warning, log_error, log_metric
 from .utils import get_api_url_from_api_id
 from .config import CATEGORY_MAPPING
+from .archive_db import add_papers, upload_database_to_s3
 
 ses_v2 = boto3.client('sesv2', region_name='us-east-1')
-BULK_BATCH_SIZE = 50  # SES bulk email limit
-PAPERS_PER_TOPIC = 5  # Papers to fetch per topic
-PAPERS_PER_NEWSLETTER = 5  # Papers per newsletter
+s3_client = boto3.client('s3')
+BULK_BATCH_SIZE = 50
+PAPERS_PER_TOPIC = 5
+PAPERS_PER_NEWSLETTER = 5
 
 
 def lambda_handler(event, context):
@@ -40,7 +42,6 @@ def lambda_handler(event, context):
     ])
 
     try:
-        # STEP 1: Get subscribers with preferences
         contact_list_name = os.environ.get('CONTACT_LIST_NAME')
         subscribers = get_subscribers_with_preferences(contact_list_name)
 
@@ -50,7 +51,6 @@ def lambda_handler(event, context):
 
         log_info('subscribers_fetched', count=len(subscribers))
         
-        # Log first few subscribers to debug preferences
         for i, sub in enumerate(subscribers[:3]):
             log_info('subscriber_detail',
                     index=i,
@@ -58,7 +58,6 @@ def lambda_handler(event, context):
                     topics=sub['topics'],
                     topics_type=type(sub['topics']).__name__)
 
-        # STEP 2: Group subscribers by unique preference combinations
         subscriber_groups = group_subscribers_by_preferences(subscribers)
         
         if not subscriber_groups:
@@ -69,14 +68,12 @@ def lambda_handler(event, context):
                 num_groups=len(subscriber_groups),
                 groups={str(k): len(v) for k, v in subscriber_groups.items()})
 
-        # STEP 3: Determine ALL topics needed across all groups
         all_needed_topics = get_all_needed_topics(subscriber_groups)
         
         log_info('all_topics_identified',
                 topics=list(all_needed_topics),
                 count=len(all_needed_topics))
 
-        # STEP 4: Make ONE PubMed call for all topics
         pubmed_client = PubMedClient()
         papers_by_topic, pmid_to_topic = pubmed_client.get_papers_for_multiple_topics(
             all_needed_topics,
@@ -91,7 +88,6 @@ def lambda_handler(event, context):
                 topics=list(papers_by_topic.keys()),
                 total_papers=sum(len(papers) for papers in papers_by_topic.values()))
 
-        # STEP 5: For each group, select 5 papers matching THEIR preferences
         newsletters = build_newsletters_for_groups(subscriber_groups, papers_by_topic)
         
         if not newsletters:
@@ -100,7 +96,6 @@ def lambda_handler(event, context):
         
         log_info('newsletters_built', num_newsletters=len(newsletters))
 
-        # STEP 6: Collect ALL unique papers across all newsletters
         all_unique_papers = {}
         for newsletter in newsletters.values():
             for paper in newsletter['papers']:
@@ -108,7 +103,6 @@ def lambda_handler(event, context):
         
         log_info('unique_papers_for_summaries', count=len(all_unique_papers))
 
-        # STEP 7: Generate summaries for all unique papers (ONE Bedrock call)
         bedrock_client = BedrockClient()
         papers_list = list(all_unique_papers.values())
         summaries_by_pmid = generate_summaries_for_papers(bedrock_client, papers_list)
@@ -119,11 +113,12 @@ def lambda_handler(event, context):
 
         log_info('summaries_generated', count=len(summaries_by_pmid))
 
-        # STEP 8: Send individual newsletter to each group
         sender_email = os.environ.get('SENDER_EMAIL')
         result = send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email)
 
-        # Log completion
+        archive_saved = save_to_archive(papers_list, summaries_by_pmid, pmid_to_topic)
+        log_info('archive_save_attempted', success=archive_saved)
+
         duration = (datetime.now() - start_time).total_seconds()
         log_metric('NewsletterGenerationDuration', duration, unit='Seconds')
         log_info('newsletter_generation_completed', **result)
@@ -146,9 +141,6 @@ def group_subscribers_by_preferences(subscribers):
     
     Returns:
         Dict mapping preference_key to list of emails.
-        preference_key is either:
-        - None (for subscribers wanting all topics)
-        - tuple of sorted topic strings (e.g., ('space', 'technology'))
     """
     groups = defaultdict(list)
     
@@ -156,13 +148,10 @@ def group_subscribers_by_preferences(subscribers):
         email = subscriber['email']
         topics = subscriber['topics']
         
-        # Create preference key
         if topics is None:
-            # Wants all topics - special group
             pref_key = None
             pref_display = 'all'
         else:
-            # Specific topics - sorted tuple
             pref_key = tuple(sorted(topics))
             pref_display = list(pref_key)
         
@@ -194,11 +183,9 @@ def get_all_needed_topics(subscriber_groups):
     
     for pref_key in subscriber_groups.keys():
         if pref_key is None:
-            # This group wants all topics, so include all available
             all_topics.update(CATEGORY_MAPPING.keys())
-            all_topics.discard('default')  # Don't fetch 'default'
+            all_topics.discard('default')
         else:
-            # This group wants specific topics
             all_topics.update(pref_key)
     
     return all_topics
@@ -207,94 +194,66 @@ def get_all_needed_topics(subscriber_groups):
 def build_newsletters_for_groups(subscriber_groups, papers_by_topic):
     """Build newsletter for each subscriber group with balanced paper distribution.
     
-    Papers are distributed evenly across requested topics using round-robin.
-    This ensures users see a variety of topics rather than all papers from one topic.
-    
     Args:
         subscriber_groups: Dict mapping preference_key to list of emails.
         papers_by_topic: Dict mapping topic to list of papers.
     
     Returns:
-        Dict mapping preference_key to newsletter dict with:
-        - 'papers': List of 5 papers with balanced topic distribution
-        - 'recipients': List of email addresses
+        Dict mapping preference_key to newsletter dict.
     """
     newsletters = {}
     
     for pref_key, recipients in subscriber_groups.items():
-        # Collect papers matching THIS group's preferences
-        group_papers_by_topic = {}
-        
         if pref_key is None:
-            # Wants ALL topics - include papers from all topics
-            group_papers_by_topic = papers_by_topic.copy()
+            relevant_papers = papers_by_topic
         else:
-            # Wants SPECIFIC topics - only include papers from those topics
-            for topic in pref_key:
-                if topic in papers_by_topic:
-                    group_papers_by_topic[topic] = papers_by_topic[topic]
+            relevant_papers = {
+                topic: papers
+                for topic, papers in papers_by_topic.items()
+                if topic in pref_key
+            }
         
-        if not group_papers_by_topic:
+        if not relevant_papers:
             log_warning('no_papers_for_group',
-                       preferences=list(pref_key) if pref_key else 'all',
-                       recipients_count=len(recipients))
+                       preferences=list(pref_key) if pref_key else 'all')
             continue
         
-        # Distribute papers evenly using round-robin
         selected_papers = distribute_papers_evenly(
-            group_papers_by_topic, 
+            relevant_papers,
             PAPERS_PER_NEWSLETTER
         )
         
-        if not selected_papers:
-            log_warning('no_papers_after_distribution',
-                       preferences=list(pref_key) if pref_key else 'all',
-                       recipients_count=len(recipients))
-            continue
-        
-        newsletters[pref_key] = {
-            'papers': selected_papers,
-            'recipients': recipients
-        }
-        
-        # Log topic distribution
-        topic_counts = {}
-        for paper in selected_papers:
-            topic = paper.get('topic', 'unknown')
-            topic_counts[topic] = topic_counts.get(topic, 0) + 1
-        
-        log_info('newsletter_built',
-                preferences=list(pref_key) if pref_key else 'all',
-                papers_count=len(selected_papers),
-                recipients_count=len(recipients),
-                topic_distribution=topic_counts)
+        if selected_papers:
+            newsletters[pref_key] = {
+                'papers': selected_papers,
+                'recipients': recipients
+            }
+            
+            log_info('newsletter_built',
+                    preferences=list(pref_key) if pref_key else 'all',
+                    papers=len(selected_papers),
+                    recipients=len(recipients))
     
     return newsletters
 
 
 def distribute_papers_evenly(papers_by_topic, target_count):
-    """Distribute papers evenly across topics using round-robin, then group by topic.
-    
-    First uses round-robin to ensure balanced representation, then sorts by topic
-    so papers from the same topic appear together in the final newsletter.
+    """Distribute papers evenly across topics using round-robin.
     
     Args:
         papers_by_topic: Dict mapping topic to list of papers.
         target_count: Number of papers to select.
     
     Returns:
-        List of papers with balanced topic distribution, grouped by topic.
+        List of papers with balanced topic distribution.
     """
     if not papers_by_topic:
         return []
     
-    # Create list of (topic, papers) sorted by topic name for consistency
     topic_papers_list = [(topic, papers[:]) for topic, papers in sorted(papers_by_topic.items())]
-    
     selected = []
     round_num = 0
     
-    # Round-robin: take one paper from each topic in turn
     while len(selected) < target_count:
         added_this_round = False
         
@@ -302,20 +261,17 @@ def distribute_papers_evenly(papers_by_topic, target_count):
             if len(selected) >= target_count:
                 break
                 
-            # Take next paper from this topic if available
             if round_num < len(papers):
                 paper = papers[round_num].copy()
-                paper['topic'] = topic  # Add topic for tracking
+                paper['topic'] = topic
                 selected.append(paper)
                 added_this_round = True
         
-        # If no papers were added this round, we've exhausted all topics
         if not added_this_round:
             break
         
         round_num += 1
     
-    # Sort papers by topic so all papers from same topic are grouped together
     selected.sort(key=lambda p: p.get('topic', 'zzz'))
     
     log_info('papers_distributed',
@@ -351,7 +307,6 @@ def generate_summaries_for_papers(bedrock_client, papers):
             if not summaries:
                 return {}
         
-        # Map PMIDs to summaries
         summaries_by_pmid = {}
         for paper, summary in zip(papers, summaries):
             summaries_by_pmid[paper['pmid']] = summary
@@ -384,7 +339,6 @@ def send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email
         papers = newsletter['papers']
         recipients = newsletter['recipients']
         
-        # Filter to papers we have summaries for
         valid_papers = []
         valid_summaries = []
         paper_topics = []
@@ -401,7 +355,6 @@ def send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email
                        preferences=list(pref_key) if pref_key else 'all')
             continue
         
-        # Log what's being sent
         topic_dist = defaultdict(int)
         for topic in paper_topics:
             topic_dist[topic] += 1
@@ -412,10 +365,8 @@ def send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email
                 recipients_count=len(recipients),
                 topics_in_newsletter=dict(topic_dist))
         
-        # Generate subject
         subject_line = email_generator.generate_subject_line(paper_count=len(valid_papers))
         
-        # Send to recipients in batches
         for i in range(0, len(recipients), BULK_BATCH_SIZE):
             batch_emails = recipients[i:i + BULK_BATCH_SIZE]
             
@@ -485,111 +436,194 @@ def send_newsletters(newsletters, summaries_by_pmid, pmid_to_topic, sender_email
 def get_subscribers_with_preferences(contact_list_name):
     """Fetch subscribers with their topic preferences from SES.
     
-    Reads preferences from TopicPreferences field which is always returned
-    by list_contacts - no individual get_contact calls needed.
-
     Args:
-        contact_list_name: SES contact list name.
-
+        contact_list_name: Name of the SES contact list.
+        
     Returns:
-        List of dicts with 'email' and 'topics' fields.
+        list: List of subscriber dicts with 'email' and 'topics' keys.
     """
-    subscribers = []
-    next_token = None
-
     try:
+        subscribers = []
+        next_token = None
+        
         while True:
-            params = {
-                'ContactListName': contact_list_name,
-                'Filter': {
-                    'FilteredStatus': 'OPT_IN'
-                }
-            }
-
+            params = {'ContactListName': contact_list_name}
             if next_token:
                 params['NextToken'] = next_token
-
+            
             response = ses_v2.list_contacts(**params)
-
+            
             for contact in response.get('Contacts', []):
-                email = contact['EmailAddress']
-                
-                # Read topics directly from TopicPreferences (always returned)
                 topic_prefs = contact.get('TopicPreferences', [])
                 
-                # Extract topics where SubscriptionStatus is OPT_IN
                 opted_in_topics = [
-                    tp['TopicName'] 
-                    for tp in topic_prefs 
+                    tp['TopicName']
+                    for tp in topic_prefs
                     if tp.get('SubscriptionStatus') == 'OPT_IN'
                 ]
                 
-                # If no topics opted in OR all topics opted in, return None (gets all content)
-                # Otherwise return the specific list of opted-in topics
-                all_available_topics = set(CATEGORY_MAPPING.keys()) - {'default'}
+                if not opted_in_topics:
+                    continue
                 
-                if not opted_in_topics or set(opted_in_topics) == all_available_topics:
-                    topics = None  # Gets all topics
+                all_content_topics = set(CATEGORY_MAPPING.keys()) - {'default'}
+                opted_in_set = set(opted_in_topics)
+                
+                if 'daily-research' in opted_in_set:
+                    if opted_in_set - {'daily-research'} == all_content_topics:
+                        topics = None
+                    else:
+                        topics = sorted(list(opted_in_set - {'daily-research'}))
                 else:
-                    topics = opted_in_topics
+                    topics = sorted(list(opted_in_set))
                 
-                log_info('subscriber_fetched',
-                        email=email,
-                        opted_in_topics=opted_in_topics,
-                        parsed_topics=topics)
-                
-                subscribers.append({
-                    'email': email,
-                    'topics': topics
-                })
-
+                if topics is None or len(topics) > 0:
+                    subscribers.append({
+                        'email': contact['EmailAddress'],
+                        'topics': topics
+                    })
+            
             next_token = response.get('NextToken')
             if not next_token:
                 break
-
+        
+        return subscribers
+        
     except Exception as e:
-        log_error('failed_to_fetch_subscribers', error=str(e))
+        log_error('fetch_subscribers_failed', error=str(e))
         raise
-
-    return subscribers
 
 
 def parse_topic_preferences(attrs_json):
-    """Parse topic preferences from SES AttributesData JSON.
-
+    """Parse topic preferences from contact attributes.
+    
     Args:
-        attrs_json: JSON string from SES.
-
+        attrs_json: JSON string of contact attributes.
+        
     Returns:
-        List of topic strings, or None for all topics.
+        list or None: List of topic strings, or None for all topics.
     """
-    if not attrs_json:
-        log_info('empty_attrs', result='returning None for all topics')
-        return None
-
     try:
+        if not attrs_json:
+            return None
+            
         attrs = json.loads(attrs_json)
         topics = attrs.get('topics')
         
-        log_info('parsing_attrs',
-                raw_json=attrs_json,
-                parsed_dict=attrs,
-                topics_key_value=topics,
-                topics_is_list=isinstance(topics, list),
-                topics_length=len(topics) if isinstance(topics, list) else 0)
-
-        if isinstance(topics, list) and len(topics) > 0:
-            log_info('valid_topics_found', topics=topics)
-            return topics
+        if not topics or not isinstance(topics, list) or len(topics) == 0:
+            return None
         
-        log_info('invalid_topics', topics=topics, reason='not a non-empty list')
-        return None
-
-    except json.JSONDecodeError as e:
-        log_error('json_decode_error', attrs_json=attrs_json, error=str(e))
+        return topics
+        
+    except Exception:
         return None
 
 
 def log_preference_distribution(subscribers):
-    """Log metrics about subscriber preferences (unused but kept for compatibility)."""
-    pass
+    """Log distribution of topic preferences.
+    
+    Args:
+        subscribers: List of subscriber dicts.
+    """
+    topic_counts = defaultdict(int)
+    all_topics_count = 0
+    
+    for sub in subscribers:
+        if sub['topics'] is None:
+            all_topics_count += 1
+        else:
+            for topic in sub['topics']:
+                topic_counts[topic] += 1
+    
+    log_info('preference_distribution',
+             all_topics=all_topics_count,
+             topic_counts=dict(topic_counts))
+
+
+def save_to_archive(papers, summaries_by_pmid, pmid_to_topic):
+    """Save newsletter content to SQLite database in S3.
+    
+    This replaces the previous JSON file approach with SQLite storage,
+    providing efficient querying and proper pagination support.
+    
+    Workflow:
+        1. Download SQLite database from S3 (or use cached version)
+        2. Add new papers to database using SQL INSERT
+        3. Upload updated database back to S3
+        4. S3 upload is atomic - if it fails, old version is preserved
+    
+    Args:
+        papers: List of paper dictionaries from PubMed.
+        summaries_by_pmid: Dict mapping PMID to generated summary text.
+        pmid_to_topic: Dict mapping PMID to topic category.
+        
+    Returns:
+        bool: True if save successful, False otherwise.
+    """
+    bucket_name = os.environ.get('ARCHIVE_BUCKET_NAME')
+    
+    if not bucket_name:
+        log_warning('archive_bucket_not_configured')
+        monitoring.put_metric('ArchiveSaved', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'NotConfigured'}
+        ])
+        return False
+    
+    # Filter out papers without summaries
+    valid_papers = [
+        paper for paper in papers
+        if paper.get('pmid') in summaries_by_pmid
+    ]
+    
+    if not valid_papers:
+        log_warning('no_valid_papers_to_archive',
+                   total_papers=len(papers))
+        monitoring.put_metric('ArchiveSaved', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'NoValidPapers'}
+        ])
+        return False
+    
+    log_info('archiving_papers_to_sqlite',
+             paper_count=len(valid_papers),
+             bucket=bucket_name)
+    
+    try:
+        # Add papers to SQLite database
+        # Database is downloaded from S3 (if not cached) automatically
+        inserted_count = add_papers(
+            papers=valid_papers,
+            summaries_by_pmid=summaries_by_pmid,
+            pmid_to_topic=pmid_to_topic
+        )
+        
+        log_info('papers_inserted_into_database',
+                 inserted=inserted_count,
+                 total=len(valid_papers))
+        
+        # Upload updated database back to S3
+        upload_database_to_s3()
+        
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        
+        log_info('archive_saved_successfully',
+                 date=date_str,
+                 papers_count=inserted_count,
+                 bucket=bucket_name)
+        
+        monitoring.put_metric('ArchiveSaved', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'Success'}
+        ])
+        monitoring.put_metric('PapersArchived', inserted_count)
+        
+        return True
+        
+    except Exception as e:
+        log_error('archive_save_failed',
+                 error=str(e),
+                 error_type=type(e).__name__,
+                 paper_count=len(valid_papers))
+        
+        monitoring.put_metric('ArchiveSaved', 1, dimensions=[
+            {'Name': 'Status', 'Value': 'Failed'}
+        ])
+        
+        return False

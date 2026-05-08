@@ -1,7 +1,9 @@
 """AWS Bedrock integration for AI-powered content generation."""
 
-import json
+import os
 import boto3
+
+DEFAULT_MODEL_ID = 'us.anthropic.claude-sonnet-4-6'
 
 
 class BedrockClient:
@@ -9,12 +11,12 @@ class BedrockClient:
 
     def __init__(self, region='us-east-1'):
         """Initialize Bedrock client.
-        
+
         Args:
             region: AWS region for Bedrock service.
         """
         self.client = boto3.client('bedrock-runtime', region_name=region)
-        self.model_id = 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+        self.model_id = os.environ.get('BEDROCK_MODEL_ID', DEFAULT_MODEL_ID)
     
     def generate_summaries(self, papers):
         """Generate entertaining summaries for research papers.
@@ -26,20 +28,16 @@ class BedrockClient:
             List of summary strings, one per paper.
         """
         prompt = self._build_prompt(papers)
-        
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 600,  # Reduced to encourage shorter summaries
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.9
-        })
-        
+
         try:
             print("Calling Bedrock to generate entertaining summaries...")
-            
-            response = self.client.invoke_model(modelId=self.model_id, body=body)
-            response_body = json.loads(response['body'].read())
-            summaries_text = response_body['content'][0]['text']
+
+            response = self.client.converse(
+                modelId=self.model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={"maxTokens": 600, "temperature": 0.9},
+            )
+            summaries_text = response['output']['message']['content'][0]['text']
             
             summaries = self._parse_summaries(summaries_text)
             print(f"Generated {len(summaries)} entertaining summaries")

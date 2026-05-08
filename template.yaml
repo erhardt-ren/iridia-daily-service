@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Iridia Daily - Research Intelligence Newsletter
+Description: Iridia Daily - Research Intelligence Newsletter with Web Archive
 
 Globals:
   Function:
@@ -37,7 +37,30 @@ Parameters:
 
 Resources:
   # ==========================================
-  # API GATEWAY (explicitly defined, custom stage)
+  # S3 BUCKET FOR WEB ARCHIVE
+  # ==========================================
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-archive-${StageName}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - "*"
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedHeaders:
+              - "*"
+            MaxAge: 3600
+
+  # ==========================================
+  # API GATEWAY
   # ==========================================
   IridiaApi:
     Type: AWS::Serverless::Api
@@ -55,7 +78,7 @@ Resources:
           ThrottlingBurstLimit: 40
 
   # ==========================================
-  # SECRETS MANAGEMENT - SECURE STORAGE
+  # SECRETS MANAGEMENT
   # ==========================================
   HMACSecret:
     Type: AWS::SecretsManager::Secret
@@ -70,7 +93,93 @@ Resources:
         RequireEachIncludedType: true
 
   # ==========================================
-  # SES CONTACT LIST AND TOPICS
+  # IAM ROLES
+  # ==========================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SES Permissions
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                  - ses:SendBulkEmail
+                  - ses:SendBulkTemplatedEmail
+                  - ses:ListContacts
+                  - ses:GetContact
+                  - ses:CreateContact
+                  - ses:UpdateContact
+                  - ses:DeleteContact
+                  - sesv2:SendEmail
+                  - sesv2:SendBulkEmail
+                  - sesv2:CreateContact
+                  - sesv2:GetContact
+                  - sesv2:UpdateContact
+                  - sesv2:DeleteContact
+                  - sesv2:ListContacts
+                  - sesv2:GetContactList
+                Resource: "*"
+              
+              # Bedrock Permissions
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6"
+              
+              # Secrets Manager Permissions
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref HMACSecret
+              
+              # CloudWatch Metrics
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+              
+              # Claude Subscription handling
+              - Effect: Allow
+                Action:
+                  - aws-marketplace:ViewSubscriptions
+                Resource: "*"
+
+              # API Gateway (for URL construction)
+              - Effect: Allow
+                Action:
+                  - apigateway:GET
+                Resource: !Sub "arn:aws:apigateway:${AWS::Region}::/restapis/*"
+              
+              # S3 Permissions for Archive
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ArchiveBucket.Arn
+                  - !Sub "${ArchiveBucket.Arn}/archive/*"
+                  - !Sub "${ArchiveBucket.Arn}/*"
+
+  # ==========================================
+  # SES CONTACT LIST
   # ==========================================
   NewsletterContactList:
     Type: AWS::SES::ContactList
@@ -124,87 +233,9 @@ Resources:
         TextPart: '{{text_content}}'
 
   # ==========================================
-  # SNS TOPIC FOR ALERTS
-  # ==========================================
-  AlertTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: iridia-daily-alerts
-      DisplayName: Iridia Daily Alerts
-      Subscription:
-        - Endpoint: !Ref AlertEmail
-          Protocol: email
-
-  # ==========================================
-  # IAM ROLE WITH SECRETS ACCESS
-  # ==========================================
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: NewsletterPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              # ==========================================
-              # SES Permissions (send, contact management)
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - ses:SendEmail
-                  - ses:SendRawEmail
-                  - ses:SendBulkEmail
-                  - ses:SendBulkTemplatedEmail
-                  - ses:ListContacts
-                  - ses:GetContact
-                  - ses:CreateContact
-                  - ses:UpdateContact
-                  - ses:DeleteContact
-                  - ses:GetEmailIdentity
-                  - ses:GetIdentityVerificationAttributes
-                  - ses:GetTemplate
-                  - ses:CreateTemplate
-                  - ses:UpdateTemplate
-                Resource: "*"
-
-              # ==========================================
-              # Bedrock Permissions
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-                  - "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
-
-              # ==========================================
-              # CloudWatch Metrics
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricData
-                Resource: "*"
-
-              # ==========================================
-              # Secrets Manager (read-only)
-              # ==========================================
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource: !Ref HMACSecret
-
-  # ==========================================
   # LAMBDA FUNCTIONS
   # ==========================================
+  
   NewsletterFunction:
     Type: AWS::Serverless::Function
     DependsOn:
@@ -219,13 +250,15 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
-          SENDER_EMAIL: !Ref SenderEmail
           CONTACT_LIST_NAME: !Ref ContactListName
+          SENDER_EMAIL: !Ref SenderEmail
           RECIPIENT_DISPLAY: !Sub "${RecipientDisplay} <${SenderEmail}>"
           AWS_BEDROCK_REGION: !Ref AWS::Region
+          BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-6
           HMAC_SECRET_ARN: !Ref HMACSecret
-          API_STAGE_NAME: !Ref StageName
           API_ID: !Ref IridiaApi
+          API_STAGE_NAME: !Ref StageName
+          ARCHIVE_BUCKET_NAME: !Ref ArchiveBucket
       Events:
         DailySchedule:
           Type: Schedule
@@ -326,6 +359,30 @@ Resources:
             Path: /preferences
             Method: post
 
+  ArchiveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: iridia-daily-archive
+      CodeUri: src/
+      Handler: iridia_daily.archive_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ARCHIVE_BUCKET_NAME: !Ref ArchiveBucket
+      Events:
+        GetLatest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /archive/{proxy+}
+            Method: get
+        OptionsArchive:
+          Type: Api
+          Properties:
+            RestApiId: !Ref IridiaApi
+            Path: /archive/{proxy+}
+            Method: options
+
   HealthCheckFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -351,60 +408,51 @@ Resources:
   # ==========================================
   # CLOUDWATCH ALARMS
   # ==========================================
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Iridia Daily Alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
   NewsletterErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: iridia-newsletter-errors
-      AlarmDescription: Alert on newsletter generation errors
-      MetricName: NewsletterGeneration
-      Namespace: IridiaDaily
+      AlarmName: !Sub "${AWS::StackName}-newsletter-errors"
+      AlarmDescription: Alert on newsletter function errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
       Threshold: 1
       ComparisonOperator: GreaterThanThreshold
       Dimensions:
-        - Name: Status
-          Value: Error
+        - Name: FunctionName
+          Value: !Ref NewsletterFunction
       AlarmActions:
         - !Ref AlertTopic
       TreatMissingData: notBreaching
 
-  SubscriptionFailureAlarm:
+  SubscriptionErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: iridia-subscription-failures
-      AlarmDescription: Alert on subscription failures
-      MetricName: SubscriptionAttempt
-      Namespace: IridiaDaily
+      AlarmName: !Sub "${AWS::StackName}-subscription-errors"
+      AlarmDescription: Alert on subscription errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
       Statistic: Sum
-      Period: 3600
-      EvaluationPeriods: 1
+      Period: 300
+      EvaluationPeriods: 2
       Threshold: 5
       ComparisonOperator: GreaterThanThreshold
       Dimensions:
-        - Name: Status
-          Value: Error
-      AlarmActions:
-        - !Ref AlertTopic
-      TreatMissingData: notBreaching
-
-  NewsletterDeliveryAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: iridia-newsletter-low-delivery
-      AlarmDescription: Alert when newsletter delivery drops
-      MetricName: NewsletterDelivered
-      Namespace: IridiaDaily
-      Statistic: Sum
-      Period: 86400
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: LessThanThreshold
+        - Name: FunctionName
+          Value: !Ref SubscribeFunction
       AlarmActions:
         - !Ref AlertTopic
       TreatMissingData: breaching
-
 
 Outputs:
   ContactListName:
@@ -441,11 +489,21 @@ Outputs:
     Description: Preferences API endpoint
     Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/preferences"
 
+  ArchiveEndpoint:
+    Description: Archive API endpoint
+    Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/archive/latest"
+
   HealthCheckEndpoint:
     Description: Health check endpoint URL
     Value: !Sub "https://${IridiaApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/health"
     Export:
       Name: !Sub "${AWS::StackName}-HealthCheckEndpoint"
+
+  ArchiveBucketName:
+    Description: S3 bucket for web archive
+    Value: !Ref ArchiveBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ArchiveBucket"
 
   AlertTopicArn:
     Description: SNS Topic for Alerts

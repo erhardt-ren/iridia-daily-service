@@ -29,23 +29,8 @@ window.IRIDIA_CONFIG = {
      * @type {string}
      * @default 'https://api.iridia-daily.com'
      * 
-     * @example
-     * // Production environment
-     * API_URL: 'https://api.iridia-daily.com'
-     * 
-     * @example
-     * // Staging environment
-     * API_URL: 'https://staging-api.iridia-daily.com'
-     * 
-     * @example
-     * // Local development
-     * API_URL: 'http://localhost:3000'
-     * 
-     * @example
-     * // Using environment variables (requires build tool)
-     * API_URL: process.env.API_URL || 'http://localhost:3000'
      */
-    API_URL: 'https://api.iridia-daily.com',
+    API_URL: 'https://xjprpiffrb.execute-api.us-east-1.amazonaws.com/prod',
     
     /**
      * API version string.
@@ -104,7 +89,7 @@ function validateConfig() {
     }
     
     // Warn if using default API URL
-    if (config.API_URL === 'https://your-api-endpoint.com') {
+    if (config.API_URL === 'https://api.iridia-daily.com') {
         console.warn(
             'IRIDIA_CONFIG: Using placeholder API_URL. ' +
             'Please update config.js with your actual backend endpoint for iridia-daily.com.'

@@ -221,11 +221,8 @@ class TestGetSubscribersWithPreferences:
         subscribers = get_subscribers_with_preferences('test-list')
 
         assert len(subscribers) == 1
-        # Since daily-research is included, the comparison fails and returns the full list
-        # The list will include all content topics + daily-research
-        assert subscribers[0]['topics'] is not None
-        assert isinstance(subscribers[0]['topics'], list)
-        assert len(subscribers[0]['topics']) > 0
+        # All content topics + daily-research opted in → topics = None (means "all topics")
+        assert subscribers[0]['topics'] is None
 
 
 class TestParseTopicPreferences:
@@ -513,8 +510,8 @@ class TestGetSubscribersEdgeCases:
 
         subscribers = get_subscribers_with_preferences('test-list')
 
-        assert len(subscribers) == 1
-        assert subscribers[0]['topics'] is None  # No topics = all topics
+        # No opted-in topics → subscriber is excluded (not sent unsolicited email)
+        assert len(subscribers) == 0
 
     @patch('iridia_daily.newsletter_handler.ses_v2')
     def test_get_subscribers_ses_error(self, mock_ses_v2, mock_env_vars):
